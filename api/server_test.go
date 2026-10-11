@@ -17,6 +17,7 @@ import (
 	"siemlite/pkg/alerts"
 	"siemlite/pkg/audit"
 	"siemlite/pkg/auth"
+	"siemlite/pkg/email"
 	"siemlite/pkg/ingest"
 	"siemlite/pkg/intel"
 	"siemlite/pkg/search"
@@ -52,7 +53,7 @@ func newEnv(t *testing.T) *env {
 	engine := alerts.New(repo, nil)
 	srv := httptest.NewTLSServer(api.NewServer("", api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: search.NewEngine(repo), Auth: auth.New(repo, nil), Router: router,
-		Version: "v0.0-test", Audit: audit.New(worker, router, nil), Alerts: engine,
+		Email: email.NewService(repo, filepath.Join(t.TempDir(), "k.key")), Version: "v0.0-test", Audit: audit.New(worker, router, nil), Alerts: engine,
 	}).Handler())
 	t.Cleanup(srv.Close)
 	return &env{t: t, srv: srv, repo: repo, worker: worker, alerts: engine}

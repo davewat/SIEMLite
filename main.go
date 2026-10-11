@@ -30,6 +30,7 @@ import (
 	"siemlite/pkg/audit"
 	"siemlite/pkg/auth"
 	"siemlite/pkg/backup"
+	"siemlite/pkg/email"
 	"siemlite/pkg/enrich"
 	"siemlite/pkg/ingest"
 	"siemlite/pkg/intel"
@@ -326,6 +327,7 @@ func run() error {
 		slog.Info("syslog listening", "udp", *syslogUDP, "tcp", *syslogTCP, "tls", *syslogTLS, "allow", allowed)
 	}
 
+	emailSvc := email.NewService(repo, email.KeyPath(*dbPath))
 	var updates *update.Checker
 	if *updateCheck {
 		updates = update.New(version(), startExe)
@@ -334,7 +336,7 @@ func run() error {
 	srv := api.NewServer(*addr, api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: engine,
 		Auth: authn, Intel: intelSvc, Syslog: syslogSrv, Router: router, AI: aiClient,
-		Backups: backups, Started: started, Version: version(), Updates: updates, Audit: auditLog, Alerts: alertEngine,
+		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Audit: auditLog, Alerts: alertEngine,
 		Restart: func() {
 			select {
 			case restartCh <- struct{}{}:
