@@ -125,6 +125,13 @@ func TestEmailSettingsAPI(t *testing.T) {
 		t.Errorf("GET = %v", again)
 	}
 
+	// Pointing the saved settings at another server needs the password typed again.
+	moved := map[string]any{"host": "localhost", "port": port, "security": "none", "from_address": "siem@example.com"}
+	var mv map[string]string
+	if got := e.call(root, "PUT", "/api/v1/system/email", moved, &mv, nil); got != 400 || !strings.Contains(mv["error"], "enter the password again") {
+		t.Errorf("save with another host and no password = %d %v", got, mv)
+	}
+
 	// A test email goes through the form's settings.
 	test := map[string]any{"host": "127.0.0.1", "port": port, "security": "none", "from_address": "siem@example.com", "to": "ann@example.com"}
 	if got := e.call(root, "POST", "/api/v1/system/email/test", test, nil, nil); got != 200 {
@@ -142,7 +149,13 @@ func TestEmailSettingsAPI(t *testing.T) {
 	if got := e.call(root, "POST", "/api/v1/system/email/test", test, &er, nil); got != 400 {
 		t.Errorf("bad recipient = %d %v", got, er)
 	}
+	// The saved password is only used with the server it was saved for: aiming a test at
+	// another port needs a password of its own, so it can't be sent somewhere else.
 	test["to"], test["port"] = "ann@example.com", 1
+	if got := e.call(root, "POST", "/api/v1/system/email/test", test, &er, nil); got != 400 || !strings.Contains(er["error"], "enter its password") {
+		t.Errorf("saved password reused for another server = %d %v", got, er)
+	}
+	test["password"] = "typed-for-this-server"
 	if got := e.call(root, "POST", "/api/v1/system/email/test", test, &er, nil); got != 502 || !strings.Contains(er["error"], "connect") {
 		t.Errorf("dead server = %d %v", got, er)
 	}

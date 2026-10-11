@@ -456,6 +456,9 @@ server's own error if it fails (a wrong password, a port that isn't listening, a
   never shown again, and the page only says whether one is saved. A backup contains the encrypted password but not the
   key, so after a backup is restored onto a different server the page says the password can't be read there; enter
   it again. Keep `siemlite-secret.key` private, like `siemlite.key`.
+- The saved password is only ever used with the server and login it was saved for. If you change the server, port,
+  security or username, and for **Send test** against a different server, type the password again, so nothing can
+  make SIEMLite log in somewhere else with the saved one.
 - Saving and testing are recorded in the [audit log](#audit-log) (without the password).
 - This sets up the connection only; nothing sends email by itself yet.
 

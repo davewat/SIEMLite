@@ -108,6 +108,11 @@ func (s *Service) Save(ctx context.Context, cfg Config, password *string) error 
 	if err != nil {
 		old = stored{} // damaged settings are replaced
 	}
+	// A saved password stays with the server it was saved for. Pointing the
+	// settings at a different server (or login) needs the password typed again.
+	if password == nil && old.Password != "" && !old.Config.sameServer(cfg) {
+		return InputError("You changed the server or login, so enter the password again. The saved password is only used with the server it was saved for.")
+	}
 	st := stored{Config: cfg, Password: old.Password}
 	if password != nil {
 		st.Password = ""
@@ -148,6 +153,11 @@ func (s *Service) SendWith(ctx context.Context, cfg Config, password *string, m 
 	st, err := s.load(ctx)
 	if err != nil {
 		st = stored{}
+	}
+	// The saved password may only go to the server it was saved for. Without
+	// this, a test aimed at any other host would log in there with it.
+	if password == nil && st.Password != "" && !st.Config.sameServer(cfg) {
+		return InputError("To test a different server, enter its password. The saved password is only used with the server it was saved for.")
 	}
 	st.Config = cfg
 	if password != nil {

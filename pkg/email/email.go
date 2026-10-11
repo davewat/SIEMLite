@@ -54,6 +54,13 @@ type Config struct {
 	SkipVerify bool `json:"skip_verify"`
 }
 
+// sameServer reports whether o connects to the same server, with the same
+// login, so a password saved for c is safe to use with it.
+func (c Config) sameServer(o Config) bool {
+	return strings.EqualFold(strings.TrimSpace(c.Host), strings.TrimSpace(o.Host)) && c.Port == o.Port &&
+		c.Security == o.Security && c.Username == strings.TrimSpace(o.Username) && c.SkipVerify == o.SkipVerify
+}
+
 // DefaultPort is the usual port for a security mode.
 func DefaultPort(security string) int {
 	switch security {

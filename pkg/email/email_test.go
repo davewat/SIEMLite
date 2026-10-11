@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"errors"
 	"math/big"
 	"net"
 	"os"
@@ -386,6 +387,48 @@ func TestServiceKeepsThePasswordSecret(t *testing.T) {
 	wrong := "nope"
 	if err := svc.SendWith(ctx, cfg, &wrong, Message{To: []string{"ann@example.com"}, Subject: "s", Body: "b"}); err == nil {
 		t.Error("SendWith used the saved password instead of the one given")
+	}
+
+	// The saved password is never used to log in anywhere else: a test aimed at
+	// a different host, port, login or security needs its own password.
+	for name, mod := range map[string]func(*Config){
+		"host":     func(c *Config) { c.Host = "localhost" },
+		"port":     func(c *Config) { c.Port++ },
+		"username": func(c *Config) { c.Username = "someone-else" },
+		"security": func(c *Config) { c.Security = SecurityNone },
+		"verify":   func(c *Config) { c.SkipVerify = false },
+	} {
+		moved := cfg
+		mod(&moved)
+		err := svc.SendWith(ctx, moved, nil, Message{To: []string{"ann@example.com"}, Subject: "s", Body: "b"})
+		var bad InputError
+		if !errors.As(err, &bad) || !strings.Contains(err.Error(), "enter its password") {
+			t.Errorf("%s changed, saved password reused: %v", name, err)
+		}
+	}
+	// With its own password the same test is allowed; nothing was sent to the changed hosts.
+	renamed := cfg
+	renamed.FromName = "Only the sender name changed"
+	if err := svc.SendWith(ctx, renamed, nil, Message{To: []string{"ann@example.com"}, Subject: "s", Body: "b"}); err != nil {
+		t.Errorf("a change that doesn't affect where the password goes was refused: %v", err)
+	}
+
+	// Saving the settings pointed at another server doesn't carry the saved password along.
+	elsewhere := cfg
+	elsewhere.Host = "localhost"
+	var bad InputError
+	if err := svc.Save(ctx, elsewhere, nil); !errors.As(err, &bad) || !strings.Contains(err.Error(), "enter the password again") {
+		t.Errorf("saved password kept for another host: %v", err)
+	}
+	if v, _ := svc.Get(ctx); v.Host != "127.0.0.1" || !v.HasPassword {
+		t.Errorf("a refused save changed the settings: %+v", v)
+	}
+	newPw := "another-password"
+	if err := svc.Save(ctx, elsewhere, &newPw); err != nil {
+		t.Errorf("moving to another server with its own password: %v", err)
+	}
+	if err := svc.Save(ctx, cfg, &pw); err != nil { // back to the test server for what follows
+		t.Fatal(err)
 	}
 
 	// A server with a different key can't read it, and says so instead of failing oddly.
