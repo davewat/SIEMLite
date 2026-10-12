@@ -98,7 +98,7 @@ missed it, set a new one: `docker compose exec siemlite siemlite users passwd -u
 - **Users** (admins): add people, set their role, limit what they can see, change passwords.
 - **Sources** (admins): add sources (each gets an access token and ready-to-paste code), see when each source last sent logs, choose how each source's lines are read (Automatic, None or a parser), add logs by hand, and enable, disable or delete a token (Manage).
 - **Parsers** (admins): build, upload, export and edit parsers.
-- **System** (admins): the version and whether a newer release is out (with an update button), database size and uptime, and backups: create, schedule, download, upload, restore and delete.
+- **System** (admins): the version and whether a newer release is out (with an update button), the mail server SIEMLite sends email through, database size and uptime, and backups: create, schedule, download, upload, restore and delete.
 
 ### Send logs from an app
 
@@ -194,6 +194,7 @@ the raw text.
 | `PATCH /api/v1/alerts/{id}` | same | Acknowledge, close or reopen: `{"status": "acknowledged"}`. |
 | `GET /api/v1/rules`, `POST /api/v1/rules`, `PUT`/`DELETE /api/v1/rules/{id}` | any signed-in user (list), admin | Alert rules: `{"name", "description", "enabled", "severity", "query", "min_severity", "threat_only", "source_id", "group_by", "threshold", "window_minutes"}`. |
 | `GET /api/v1/system` | admin | Database size and version, uptime, backups folder and free space. |
+| `GET`/`PUT /api/v1/system/email`, `POST /api/v1/system/email/test` | admin | The mail server settings (`{"host", "port", "security": "starttls"/"tls"/"none", "username", "password", "from_address", "from_name", "skip_verify"}`; the password is write-only, and leaving it out keeps the saved one) and a test send (the same fields plus `"to"`). |
 | `GET`/`POST /api/v1/backups`, `PUT /api/v1/backups/settings`, `POST /api/v1/backups/upload` | admin | List backups and the job status, start a backup, set the schedule (`{"interval_hours": 0/6/24/168, "keep"}`), upload a backup file. |
 | `GET`/`DELETE /api/v1/backups/{name}`, `POST /api/v1/backups/{name}/restore` | admin | Download or delete a backup; restore it (SIEMLite restarts). |
 | `POST /api/v1/parsers/test`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; ask the AI model for a parser for `{"lines"}`. |
@@ -434,6 +435,32 @@ Pass `-update-check=false` (or `SIEMLITE_UPDATE_CHECK=false`) to stop SIEMLite c
   `docker compose exec siemlite siemlite ...` commands (and `siemlite version`) still run the image's own version
   until the image is rebuilt or pulled.
 - If SIEMLite can't write where it needs to, the card says so and shows `docker compose pull && docker compose up -d`.
+
+## Email
+
+The **System** page has an **Email** section for the mail server SIEMLite sends email through. Fill in the server,
+choose the connection security, add a login if the server needs one, and say what address mail is sent from.
+**Send test** sends a message with the settings as they are in the form, before you save them, and shows the
+server's own error if it fails (a wrong password, a port that isn't listening, a certificate that doesn't verify).
+
+| Security | Usual port | Use it for |
+|---|---|---|
+| **STARTTLS** | 587 | Most mail providers and relays: starts plain, then upgrades to an encrypted connection. |
+| **TLS** | 465 | Servers that expect an encrypted connection from the first byte. |
+| **None** | 25 | A relay on a network you trust. The login and every message cross the network in plain text. |
+
+- Logins use PLAIN or LOGIN, whichever the server offers.
+- **Accept any certificate** is for a server with a self-signed certificate. The connection is still encrypted, but SIEMLite
+  can't tell whether it is talking to the right server.
+- The password is **encrypted** with a key in `siemlite-secret.key`, next to the database (`/data` with Docker). It is
+  never shown again, and the page only says whether one is saved. A backup contains the encrypted password but not the
+  key, so after a backup is restored onto a different server the page says the password can't be read there; enter
+  it again. Keep `siemlite-secret.key` private, like `siemlite.key`.
+- The saved password is only ever used with the server and login it was saved for. If you change the server, port,
+  security or username, and for **Send test** against a different server, type the password again, so nothing can
+  make SIEMLite log in somewhere else with the saved one.
+- Saving and testing are recorded in the [audit log](#audit-log) (without the password).
+- This sets up the connection only; nothing sends email by itself yet.
 
 ## Users
 

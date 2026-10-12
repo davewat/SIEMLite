@@ -22,6 +22,7 @@ import (
 	"siemlite/pkg/audit"
 	"siemlite/pkg/auth"
 	"siemlite/pkg/backup"
+	"siemlite/pkg/email"
 	"siemlite/pkg/ingest"
 	"siemlite/pkg/intel"
 	"siemlite/pkg/ocsf"
@@ -56,6 +57,7 @@ type Deps struct {
 	Backups *backup.Manager
 	Started time.Time
 	Restart func()
+	Email   *email.Service  // optional: the System page's email settings
 	Updates *update.Checker // optional: the System page's update card
 	Version string          // e.g. "v0.7"
 	Audit   *audit.Logger   // optional: records actions as INTERNAL events
@@ -141,6 +143,9 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /api/v1/system", s.handleSystem)
 	admin("GET /api/v1/system/update", s.handleUpdateStatus)
 	admin("POST /api/v1/system/update", s.handleApplyUpdate)
+	admin("GET /api/v1/system/email", s.handleGetEmail)
+	admin("PUT /api/v1/system/email", s.handleSaveEmail)
+	admin("POST /api/v1/system/email/test", s.handleTestEmail)
 	admin("GET /api/v1/backups", s.handleListBackups)
 	admin("POST /api/v1/backups", s.handleCreateBackup)
 	admin("PUT /api/v1/backups/settings", s.handleBackupSettings)

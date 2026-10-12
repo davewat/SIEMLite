@@ -318,6 +318,15 @@
   .sys-figures .sub.mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sched { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px 32px; align-items: end; margin-bottom: 16px; }
   .sched h2 { margin-bottom: 4px; }
+  .mail { display: grid; gap: 16px; margin-bottom: 16px; }
+  .mail h2 { margin-bottom: 4px; }
+  .mail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px 16px; }
+  .mail-grid .wide { grid-column: 1 / -1; }
+  .mail-grid .wide-2 { grid-column: span 2; }
+  .mail-warn { margin: 0; padding: 10px 14px; border-radius: 8px; background: var(--raised); box-shadow: inset 3px 0 0 var(--sev-4); font-size: 13.5px; }
+  .mail-actions { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: end; }
+  .mail-test { display: flex; gap: 8px; align-items: end; margin-left: auto; }
+  .mail-test .input { width: 240px; }
   .sched-fields { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
   .sched-fields .input { width: 90px; }
   .working td { color: var(--ink-2); }
@@ -358,6 +367,10 @@
     .sys-figures { grid-template-columns: 1fr; }
     .three { grid-template-columns: 1fr; }
     .sched { grid-template-columns: 1fr; }
+    .mail-grid .wide-2 { grid-column: 1 / -1; }
+    .mail-test { margin-left: 0; width: 100%; }
+    .mail-test .field-label { flex: 1; }
+    .mail-test .input { width: 100%; }
     .figure.hero { grid-column: 1 / -1; }
     .figures.four #fig-alerts-box { grid-column: 1 / -1; } /* no empty cell beside it */
     .dash-grid { grid-template-columns: 1fr; }
@@ -740,6 +753,53 @@
           <button class="btn btn-primary" type="button" id="update-apply" hidden>Update and restart</button>
         </div>
       </div>
+      <form class="panel mail" id="mail-form" autocomplete="off">
+        <div>
+          <h2>Email</h2>
+          <p class="hint" id="mail-status">Checking…</p>
+        </div>
+        <div class="mail-grid">
+          <label class="field-label wide-2">Mail server
+            <input class="input" id="mail-host" placeholder="smtp.example.com" autocomplete="off" spellcheck="false" autocapitalize="off">
+          </label>
+          <label class="field-label">Security
+            <select class="select" id="mail-security">
+              <option value="starttls">STARTTLS (usually port 587)</option>
+              <option value="tls">TLS (usually port 465)</option>
+              <option value="none">None, not encrypted (usually port 25)</option>
+            </select>
+          </label>
+          <label class="field-label">Port
+            <input class="input" id="mail-port" type="number" min="1" max="65535" inputmode="numeric">
+          </label>
+          <label class="field-label">Username <span class="muted">(if the server needs a login)</span>
+            <input class="input" id="mail-user" autocomplete="off" spellcheck="false" autocapitalize="off">
+          </label>
+          <label class="field-label">Password
+            <input class="input" id="mail-pass" type="password" autocomplete="new-password">
+          </label>
+          <label class="field-label">Send from
+            <input class="input" id="mail-from" type="email" placeholder="siemlite@example.com" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field-label">Sender name
+            <input class="input" id="mail-name" placeholder="SIEMLite" autocomplete="off">
+          </label>
+          <label class="check wide"><input type="checkbox" id="mail-skip"> Accept any certificate from the server (for one with a self-signed certificate)</label>
+          <label class="check wide" id="mail-clearpass-row" hidden><input type="checkbox" id="mail-clearpass"> Remove the saved password</label>
+        </div>
+        <p class="mail-warn" id="mail-warn" hidden>With no encryption, the login and every email cross the network in plain text. Use it only for a relay on a network you trust.</p>
+        <div class="mail-actions">
+          <button class="btn btn-primary" type="submit" id="mail-save">Save email settings</button>
+          <button class="link-btn" type="button" id="mail-remove" hidden>Remove email settings</button>
+          <div class="mail-test">
+            <label class="field-label">Send a test email to
+              <input class="input" id="mail-to" type="email" placeholder="you@example.com" autocomplete="off" spellcheck="false">
+            </label>
+            <button class="btn" type="button" id="mail-test">Send test</button>
+          </div>
+        </div>
+        <p class="notice" id="mail-msg" role="status" hidden></p>
+      </form>
       <form class="panel sched" id="sched-form">
         <div><h2>Automatic backups</h2><p class="hint">Older automatic backups are removed as new ones are made. Backups you make,
           upload, or that are made before a restore are only removed by you.</p></div>
@@ -2371,6 +2431,8 @@ async function openSystem() {
     }
   } catch (err) { notice($("system-msg"), err.message); }
   loadUpdate(false);
+  loadMail();
+  notice($("mail-msg"), "");
   await loadBackups(true);
 }
 async function loadUpdate(refresh) {
@@ -2404,6 +2466,74 @@ async function applyUpdate(u) {
   catch (err) { notice($("system-msg"), err.message); return; }
   waitForRestart("Updating SIEMLite", "SIEMLite is restarting on the new version. This page reloads when it\u2019s back.");
 }
+// --- Email settings ---
+const MAIL_PORTS = { starttls: 587, tls: 465, none: 25 };
+let mailAutoPort = 587; // the port the form filled in itself, so a port someone typed isn't overwritten
+function mailForm(m) {
+  $("mail-host").value = m.host || "";
+  $("mail-security").value = m.security || "starttls";
+  $("mail-port").value = m.port || MAIL_PORTS[$("mail-security").value];
+  mailAutoPort = MAIL_PORTS[$("mail-security").value];
+  $("mail-user").value = m.username || "";
+  $("mail-from").value = m.from_address || "";
+  $("mail-name").value = m.from_name || "";
+  $("mail-skip").checked = !!m.skip_verify;
+  $("mail-pass").value = ""; $("mail-clearpass").checked = false;
+  $("mail-pass").placeholder = m.password_unreadable ? "Enter it again" : m.has_password ? "Saved. Leave blank to keep it" : "";
+  $("mail-clearpass-row").hidden = !m.has_password;
+  $("mail-remove").hidden = !m.configured;
+  $("mail-warn").hidden = $("mail-security").value !== "none";
+  const st = $("mail-status");
+  if (!m.configured) st.textContent = "Not set up. SIEMLite can't send email yet. Enter the details of a mail server it can send through.";
+  else st.textContent = `Sending as ${m.from_name ? m.from_name + " " : ""}<${m.from_address}> through ${m.host}:${m.port}.` +
+    (m.password_unreadable ? " The saved password can't be read on this server (it may have come from a backup), so enter it again and save." : "");
+}
+async function loadMail() {
+  try { mailForm(await apiJSON("/api/v1/system/email")); }
+  catch (err) { $("mail-status").textContent = err.message; }
+}
+function mailBody() {
+  const b = { host: $("mail-host").value.trim(), port: Number($("mail-port").value), security: $("mail-security").value,
+    username: $("mail-user").value.trim(), from_address: $("mail-from").value.trim(), from_name: $("mail-name").value.trim(),
+    skip_verify: $("mail-skip").checked };
+  if ($("mail-clearpass").checked) b.password = "";
+  else if ($("mail-pass").value) b.password = $("mail-pass").value;
+  return b;
+}
+function mailBusy(on) { for (const id of ["mail-save", "mail-test", "mail-remove"]) $(id).disabled = on; }
+$("mail-security").onchange = () => {
+  const port = $("mail-port");
+  if (!port.value || Number(port.value) === mailAutoPort) port.value = mailAutoPort = MAIL_PORTS[$("mail-security").value];
+  $("mail-warn").hidden = $("mail-security").value !== "none";
+};
+$("mail-form").onsubmit = async (e) => {
+  e.preventDefault();
+  mailBusy(true);
+  try {
+    const m = await apiJSON("/api/v1/system/email", { method: "PUT", json: mailBody() });
+    mailForm(m);
+    notice($("mail-msg"), m.configured ? "Saved. Send a test email to check that it works." : "Saved. Email is off.", true);
+  } catch (err) { notice($("mail-msg"), err.message); }
+  mailBusy(false);
+};
+$("mail-test").onclick = async () => {
+  const to = $("mail-to").value.trim();
+  if (!to) { notice($("mail-msg"), "Enter an address to send the test to."); $("mail-to").focus(); return; }
+  mailBusy(true);
+  notice($("mail-msg"), `Sending a test email to ${to}…`, true);
+  try {
+    await apiJSON("/api/v1/system/email/test", { method: "POST", json: { ...mailBody(), to } });
+    notice($("mail-msg"), `Sent. Check the inbox of ${to}. These settings are not saved until you choose Save email settings.`, true);
+  } catch (err) { notice($("mail-msg"), err.message); }
+  mailBusy(false);
+};
+$("mail-remove").onclick = async () => {
+  if (!(await confirmAction("Remove the email settings?", "SIEMLite forgets the mail server and its saved password, and can't send email until you set it up again.", "Remove"))) return;
+  mailBusy(true);
+  try { mailForm(await apiJSON("/api/v1/system/email", { method: "PUT", json: { host: "" } })); notice($("mail-msg"), "Removed.", true); }
+  catch (err) { notice($("mail-msg"), err.message); }
+  mailBusy(false);
+};
 async function loadBackups(fillSettings) {
   clearTimeout(backupPoll);
   let data;
