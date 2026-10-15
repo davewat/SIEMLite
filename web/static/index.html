@@ -346,6 +346,8 @@
   .mail-test .input { width: 240px; }
   .sched-fields { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
   .sched-fields .input { width: 90px; }
+  .sched-fields #public-domain { width: 260px; }
+  #public-form .notice { grid-column: 1 / -1; margin: 0; }
   .working td { color: var(--ink-2); }
   .backups td { white-space: nowrap; }
   .backups tr.working td, .backups tr.empty td { white-space: normal; }
@@ -384,6 +386,8 @@
     .sys-figures { grid-template-columns: 1fr; }
     .three { grid-template-columns: 1fr; }
     .sched { grid-template-columns: 1fr; }
+    .sched-fields #public-domain { width: 100%; }
+    #public-form .field-label { flex: 1 1 100%; }
     .mail-grid .wide-2 { grid-column: 1 / -1; }
     .integ-head { grid-template-columns: 1fr; }
     .integ-controls { grid-column: 1; grid-row: auto; justify-content: space-between; margin-top: 6px; }
@@ -444,10 +448,10 @@
       <a class="nav-item" href="#/dashboard" data-nav="dashboard"><svg class="icon"><use href="#i-dash"/></svg>Dashboard</a>
       <a class="nav-item" href="#/database" data-nav="database"><svg class="icon"><use href="#i-db"/></svg>Database</a>
       <a class="nav-item alerts-nav" href="#/alerts" data-nav="alerts"><svg class="icon"><use href="#i-alerts"/></svg>Alerts<span class="nav-count" id="nav-alerts" hidden></span></a>
-      <div class="admin-only nav-sep" role="separator"></div>
-      <a class="nav-item admin-only" href="#/users" data-nav="users"><svg class="icon"><use href="#i-users"/></svg>Users</a>
       <a class="nav-item admin-only" href="#/sources" data-nav="sources"><svg class="icon"><use href="#i-sources"/></svg>Sources</a>
       <a class="nav-item admin-only" href="#/parsers" data-nav="parsers"><svg class="icon"><use href="#i-parsers"/></svg>Parsers</a>
+      <div class="admin-only nav-sep" role="separator"></div>
+      <a class="nav-item admin-only" href="#/users" data-nav="users"><svg class="icon"><use href="#i-users"/></svg>Users</a>
       <a class="nav-item admin-only" href="#/integrations" data-nav="integrations"><svg class="icon"><use href="#i-integrations"/></svg>Integrations</a>
       <a class="nav-item admin-only" href="#/system" data-nav="system"><svg class="icon"><use href="#i-system"/></svg>System</a>
     </nav>
@@ -898,6 +902,19 @@
           <button class="btn btn-primary" type="button" id="update-apply" hidden>Update and restart</button>
         </div>
       </div>
+      <form class="panel sched" id="public-form" autocomplete="off">
+        <div><h2>Web address</h2>
+          <p class="hint">The domain Caddy serves SIEMLite on, with a certificate from Let's Encrypt.</p>
+          <p class="hint" id="public-status">Checking…</p></div>
+        <div class="sched-fields">
+          <label class="field-label">Domain
+            <input class="input" id="public-domain" placeholder="siem.example.com" spellcheck="false" autocapitalize="off">
+          </label>
+          <button class="btn btn-primary" type="submit" id="public-save">Save</button>
+          <button class="link-btn" type="button" id="public-clear" hidden>Remove</button>
+        </div>
+        <p class="notice" id="public-msg" role="status" hidden></p>
+      </form>
       <form class="panel sched" id="sched-form">
         <div><h2>Automatic backups</h2><p class="hint">Older automatic backups are removed as new ones are made. Backups you make,
           upload, or that are made before a restore are only removed by you.</p></div>
@@ -2555,6 +2572,8 @@ async function openSystem() {
     }
   } catch (err) { notice($("system-msg"), err.message); }
   loadUpdate(false);
+  loadPublic();
+  notice($("public-msg"), "");
   await loadBackups(true);
 }
 async function loadUpdate(refresh) {
@@ -2779,6 +2798,54 @@ $("mail-remove").onclick = async () => {
   catch (err) { notice($("mail-msg"), err.message); }
   mailBusy(false);
 };
+// --- Web address (Caddy) ---
+let publicNow = null;
+function publicFill(v) {
+  publicNow = v;
+  $("public-domain").value = v.domain || "";
+  $("public-clear").hidden = !v.domain;
+  const st = $("public-status");
+  if (!v.behind_caddy) {
+    st.textContent = "Caddy isn't in front of SIEMLite on this server, so this has no effect yet. To serve SIEMLite on the internet, add COMPOSE_FILE=compose.yaml:compose.public.yaml to .env and run docker compose up -d (see \"Run on the internet\" in the README).";
+    return;
+  }
+  if (!v.domain) { st.textContent = "Caddy is running. Enter the domain people will use; Caddy gets its certificate on the first visit."; return; }
+  st.textContent = `Caddy serves SIEMLite at https://${v.domain}.` +
+    (v.resolves_to ? ` The name points to ${v.resolves_to.join(", ")}.` : v.resolve_error ? " " + v.resolve_error : "") +
+    (v.from === "setting" ? " This comes from SIEMLITE_DOMAIN in .env; saving here replaces it." : "");
+}
+async function loadPublic() {
+  try { publicFill(await apiJSON("/api/v1/system/public")); }
+  catch (err) { $("public-status").textContent = err.message; }
+}
+async function savePublic(domain) {
+  domain = domain.toLowerCase().replace(/\.$/, "");
+  // A rough check before asking anything; the server has the final say.
+  if (domain && !/^([a-z0-9-]+\.)+[a-z0-9-]+$/.test(domain)) {
+    notice($("public-msg"), "Enter a domain name only, such as siem.example.com: no https://, port or path.");
+    return;
+  }
+  const moving = publicNow && publicNow.behind_caddy && domain && domain !== location.hostname.toLowerCase();
+  if (moving && !(await confirmAction(`Move SIEMLite to https://${domain}?`,
+    "Caddy gets a certificate for it on the first visit. You'll be taken there and need to sign in again; the old address will send people to the new one.", "Move"))) return;
+  if (!domain && publicNow && publicNow.behind_caddy && !(await confirmAction("Remove the web address?",
+    "Caddy won't get a certificate for any name until you set one, so a new or renewed certificate can't be issued.", "Remove"))) return;
+  $("public-save").disabled = $("public-clear").disabled = true;
+  try {
+    const v = await apiJSON("/api/v1/system/public", { method: "PUT", json: { domain } });
+    publicFill(v);
+    if (moving && v.domain) {
+      notice($("public-msg"), `Saved. Opening https://${v.domain}…`, true);
+      setTimeout(() => { location.href = `https://${v.domain}/#/system`; }, 1200);
+    } else {
+      notice($("public-msg"), v.domain ? (v.behind_caddy ? `Saved. Caddy gets the certificate on the first visit to https://${v.domain}, which can take a few seconds.` : "Saved. It takes effect once Caddy is in front of SIEMLite.") : "Removed.", true);
+    }
+  } catch (err) { notice($("public-msg"), err.message); }
+  $("public-save").disabled = $("public-clear").disabled = false;
+}
+$("public-form").onsubmit = (e) => { e.preventDefault(); savePublic($("public-domain").value.trim()); };
+$("public-clear").onclick = () => savePublic("");
+
 async function loadBackups(fillSettings) {
   clearTimeout(backupPoll);
   let data;

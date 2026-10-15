@@ -159,6 +159,7 @@ There is no formal scale; the working rhythm is 4 / 6 / 8 / 10 / 12 / 14 / 16 / 
 | Thing | Value |
 |---|---|
 | App shell | Two columns: sidebar `236px` + fluid main. Sidebar is sticky, full height, `1px` right rule, `22px 16px 18px` padding, `26px` gap between its groups. |
+| Sidebar order | What people use day to day (Dashboard, Database, Alerts) and the log setup (Sources, Parsers) above a `1px` hairline; administration (Users, Integrations, System) below it. Standard users see only the first three, and no hairline. |
 | Main | `padding: 0 40px 48px`; each page starts `34px` down. |
 | Page header | Title left, actions right, `22px` below. |
 | Nav item | `8px 10px` padding, `10px` icon gap, `2px` between items, `18px` icons (1.8 stroke, round caps). |
