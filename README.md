@@ -52,7 +52,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.10` in `.env` and run `docker compose pull && docker compose up -d`.
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.11` in `.env` and run `docker compose pull && docker compose up -d`.
 Or build from the checkout, and deploy and upgrade with one command:
 
 ```sh
@@ -98,7 +98,8 @@ missed it, set a new one: `docker compose exec siemlite siemlite users passwd -u
 - **Users** (admins): add people, set their role, limit what they can see, change passwords.
 - **Sources** (admins): add sources (each gets an access token and ready-to-paste code), see when each source last sent logs, choose how each source's lines are read (Automatic, None or a parser), add logs by hand, and enable, disable or delete a token (Manage).
 - **Parsers** (admins): build, upload, export and edit parsers.
-- **System** (admins): the version and whether a newer release is out (with an update button), the mail server SIEMLite sends email through, database size and uptime, and backups: create, schedule, download, upload, restore and delete.
+- **Integrations** (admins): connect SIEMLite to other services. Each integration is a card you set up and then turn on or off; email is the first.
+- **System** (admins): the version and whether a newer release is out (with an update button), database size and uptime, and backups: create, schedule, download, upload, restore and delete.
 
 ### Send logs from an app
 
@@ -194,7 +195,9 @@ the raw text.
 | `PATCH /api/v1/alerts/{id}` | same | Acknowledge, close or reopen: `{"status": "acknowledged"}`. |
 | `GET /api/v1/rules`, `POST /api/v1/rules`, `PUT`/`DELETE /api/v1/rules/{id}` | any signed-in user (list), admin | Alert rules: `{"name", "description", "enabled", "severity", "query", "min_severity", "threat_only", "source_id", "group_by", "threshold", "window_minutes"}`. |
 | `GET /api/v1/system` | admin | Database size and version, uptime, backups folder and free space. |
-| `GET`/`PUT /api/v1/system/email`, `POST /api/v1/system/email/test` | admin | The mail server settings (`{"host", "port", "security": "starttls"/"tls"/"none", "username", "password", "from_address", "from_name", "skip_verify"}`; the password is write-only, and leaving it out keeps the saved one) and a test send (the same fields plus `"to"`). |
+| `GET /api/v1/integrations` | admin | The built-in integrations and their state: `{"integrations": [{"id", "name", "description", "state": "needs_setup"/"off"/"on"/"error", "summary", "configured", "enabled"}]}`. |
+| `POST /api/v1/integrations/{id}/enabled` | admin | Turn an integration on or off, keeping its settings: `{"enabled": true}`. Refused until it is set up. |
+| `GET`/`PUT /api/v1/integrations/email`, `POST /api/v1/integrations/email/test` | admin | The email settings (`{"host", "port", "security": "starttls"/"tls"/"none", "username", "password", "from_address", "from_name", "skip_verify"}`; the password is write-only, and leaving it out keeps the saved one) and a test send (the same fields plus `"to"`). These were `/api/v1/system/email` in v0.10, which still works. |
 | `GET`/`POST /api/v1/backups`, `PUT /api/v1/backups/settings`, `POST /api/v1/backups/upload` | admin | List backups and the job status, start a backup, set the schedule (`{"interval_hours": 0/6/24/168, "keep"}`), upload a backup file. |
 | `GET`/`DELETE /api/v1/backups/{name}`, `POST /api/v1/backups/{name}/restore` | admin | Download or delete a backup; restore it (SIEMLite restarts). |
 | `POST /api/v1/parsers/test`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; ask the AI model for a parser for `{"lines"}`. |
@@ -436,9 +439,16 @@ Pass `-update-check=false` (or `SIEMLITE_UPDATE_CHECK=false`) to stop SIEMLite c
   until the image is rebuilt or pulled.
 - If SIEMLite can't write where it needs to, the card says so and shows `docker compose pull && docker compose up -d`.
 
+## Integrations
+
+The **Integrations** page lists the services SIEMLite can connect to. Each is built in, and appears as a card with a state
+(**Not set up**, **Off**, **On**, or **Problem**), an **On** switch, and a **Settings** button that opens its settings. Set an
+integration up first; the switch then turns it on or off without losing its settings. Only admins see the page, and
+turning one on or off is recorded in the [audit log](#audit-log).
+
 ## Email
 
-The **System** page has an **Email** section for the mail server SIEMLite sends email through. Fill in the server,
+The **Integrations** page has an **Email** card for the mail server SIEMLite sends email through. (It was on the System page in v0.10; the settings carried over.) Fill in the server,
 choose the connection security, add a login if the server needs one, and say what address mail is sent from.
 **Send test** sends a message with the settings as they are in the form, before you save them, and shows the
 server's own error if it fails (a wrong password, a port that isn't listening, a certificate that doesn't verify).

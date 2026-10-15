@@ -24,6 +24,7 @@ import (
 	"siemlite/pkg/backup"
 	"siemlite/pkg/email"
 	"siemlite/pkg/ingest"
+	"siemlite/pkg/integrations"
 	"siemlite/pkg/intel"
 	"siemlite/pkg/ocsf"
 	"siemlite/pkg/parser"
@@ -57,12 +58,14 @@ type Deps struct {
 	Backups *backup.Manager
 	Started time.Time
 	Restart func()
-	Email   *email.Service  // optional: the System page's email settings
-	Updates *update.Checker // optional: the System page's update card
-	Version string          // e.g. "v0.7"
-	Audit   *audit.Logger   // optional: records actions as INTERNAL events
-	Alerts  *alerts.Engine  // optional: alert rules
-	Logger  *slog.Logger
+	Email   *email.Service // optional: the Email integration's settings
+	// Integrations is the list the Integrations page shows (optional).
+	Integrations *integrations.Registry
+	Updates      *update.Checker // optional: the System page's update card
+	Version      string          // e.g. "v0.7"
+	Audit        *audit.Logger   // optional: records actions as INTERNAL events
+	Alerts       *alerts.Engine  // optional: alert rules
+	Logger       *slog.Logger
 }
 
 // Server is the HTTP API.
@@ -143,6 +146,12 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /api/v1/system", s.handleSystem)
 	admin("GET /api/v1/system/update", s.handleUpdateStatus)
 	admin("POST /api/v1/system/update", s.handleApplyUpdate)
+	admin("GET /api/v1/integrations", s.handleListIntegrations)
+	admin("POST /api/v1/integrations/{id}/enabled", s.handleSetIntegrationEnabled)
+	admin("GET /api/v1/integrations/email", s.handleGetEmail)
+	admin("PUT /api/v1/integrations/email", s.handleSaveEmail)
+	admin("POST /api/v1/integrations/email/test", s.handleTestEmail)
+	// Where email's settings were before the Integrations page (v0.10).
 	admin("GET /api/v1/system/email", s.handleGetEmail)
 	admin("PUT /api/v1/system/email", s.handleSaveEmail)
 	admin("POST /api/v1/system/email/test", s.handleTestEmail)

@@ -33,6 +33,7 @@ import (
 	"siemlite/pkg/email"
 	"siemlite/pkg/enrich"
 	"siemlite/pkg/ingest"
+	"siemlite/pkg/integrations"
 	"siemlite/pkg/intel"
 	"siemlite/pkg/ocsf"
 	"siemlite/pkg/parser"
@@ -336,7 +337,7 @@ func run() error {
 	srv := api.NewServer(*addr, api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: engine,
 		Auth: authn, Intel: intelSvc, Syslog: syslogSrv, Router: router, AI: aiClient,
-		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Audit: auditLog, Alerts: alertEngine,
+		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc), Audit: auditLog, Alerts: alertEngine,
 		Restart: func() {
 			select {
 			case restartCh <- struct{}{}:
