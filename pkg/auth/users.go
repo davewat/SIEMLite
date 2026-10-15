@@ -179,6 +179,11 @@ func (a *Authenticator) StartSession(ctx context.Context, u *storage.User) (stri
 	return token, nil
 }
 
+// EndSession ends one session by its cookie token.
+func (a *Authenticator) EndSession(ctx context.Context, token string) error {
+	return a.repo.DeleteSession(ctx, hashToken(token))
+}
+
 // Logout ends the session for the request's cookie, if any.
 func (a *Authenticator) Logout(r *http.Request) error {
 	c, err := r.Cookie(CookieName)

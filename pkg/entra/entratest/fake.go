@@ -38,6 +38,9 @@ type Microsoft struct {
 	PageSize     int    // members per page (0: all in one)
 	NextLinkHost string // when set, nextLink points here instead of back at the fake
 	Opts         TokenOptions
+	// BeforeCodeExchange, if set, runs as the sign-in code is being exchanged,
+	// for tests of something changing in the middle of a sign-in.
+	BeforeCodeExchange func()
 
 	t       *testing.T
 	srv     *httptest.Server
@@ -115,6 +118,9 @@ func (f *Microsoft) fail(w http.ResponseWriter, status int, code, desc string) {
 
 func (f *Microsoft) token(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
+	if r.Form.Get("grant_type") == "authorization_code" && f.BeforeCodeExchange != nil {
+		f.BeforeCodeExchange()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r.Form.Get("client_id") != ClientID || r.Form.Get("client_secret") != ClientSecret {
