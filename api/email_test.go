@@ -186,10 +186,19 @@ func TestIntegrationsAPI(t *testing.T) {
 		Configured, Enabled                   bool
 	}
 	var list struct{ Integrations []card }
-	if got := e.call(root, "GET", "/api/v1/integrations", nil, &list, nil); got != 200 || len(list.Integrations) != 1 {
+	// The integrations are listed by name, so find email by id.
+	emailCard := func(cards []card) card {
+		for _, c := range cards {
+			if c.ID == "email" {
+				return c
+			}
+		}
+		return card{}
+	}
+	if got := e.call(root, "GET", "/api/v1/integrations", nil, &list, nil); got != 200 || len(list.Integrations) != 2 {
 		t.Fatalf("list = %d %+v", got, list)
 	}
-	if c := list.Integrations[0]; c.ID != "email" || c.Name != "Email" || c.State != "needs_setup" || c.Description == "" {
+	if c := emailCard(list.Integrations); c.ID != "email" || c.Name != "Email" || c.State != "needs_setup" || c.Description == "" {
 		t.Errorf("email card = %+v", c)
 	}
 
@@ -219,7 +228,7 @@ func TestIntegrationsAPI(t *testing.T) {
 		t.Error("the password came back")
 	}
 	e.call(root, "GET", "/api/v1/integrations", nil, &list, nil)
-	if c := list.Integrations[0]; c.State != "on" || !strings.Contains(c.Summary, "127.0.0.1") {
+	if c := emailCard(list.Integrations); c.State != "on" || !strings.Contains(c.Summary, "127.0.0.1") {
 		t.Errorf("on card = %+v", c)
 	}
 
@@ -242,7 +251,7 @@ func TestIntegrationsAPI(t *testing.T) {
 		t.Fatalf("clear = %d", got)
 	}
 	e.call(root, "GET", "/api/v1/integrations", nil, &list, nil)
-	if list.Integrations[0].State != "needs_setup" {
-		t.Errorf("after clear = %+v", list.Integrations[0])
+	if c := emailCard(list.Integrations); c.State != "needs_setup" {
+		t.Errorf("after clear = %+v", c)
 	}
 }

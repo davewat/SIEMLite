@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to build, e.g. v0.11
+        description: Release tag to build, e.g. v0.12
         required: true
 
 permissions:

@@ -18,10 +18,13 @@ import (
 	"siemlite/pkg/audit"
 	"siemlite/pkg/auth"
 	"siemlite/pkg/email"
+	"siemlite/pkg/entra"
+	"siemlite/pkg/entra/entratest"
 	"siemlite/pkg/ingest"
 	"siemlite/pkg/integrations"
 	"siemlite/pkg/intel"
 	"siemlite/pkg/search"
+	"siemlite/pkg/secret"
 	"siemlite/pkg/sources"
 	"siemlite/pkg/storage"
 )
@@ -34,6 +37,7 @@ type env struct {
 	repo   *storage.Repository
 	worker *ingest.Worker
 	alerts *alerts.Engine
+	ms     *entratest.Microsoft // the fake Microsoft that Entra sign-in talks to
 }
 
 func newEnv(t *testing.T) *env {
@@ -51,14 +55,17 @@ func newEnv(t *testing.T) *env {
 	t.Cleanup(worker.Close)
 
 	router := sources.New(repo)
+	ms := entratest.New(t)
+	entraSvc := entra.NewService(repo, repo, secret.NewBox(filepath.Join(t.TempDir(), "entra.key")), nil)
+	entraSvc.Authority, entraSvc.Graph = ms.URL, ms.URL+"/v1.0"
 	emailSvc := email.NewService(repo, filepath.Join(t.TempDir(), "k.key"))
 	engine := alerts.New(repo, nil)
 	srv := httptest.NewTLSServer(api.NewServer("", api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: search.NewEngine(repo), Auth: auth.New(repo, nil), Router: router,
-		Email: emailSvc, Integrations: integrations.New(emailSvc), Version: "v0.0-test", Audit: audit.New(worker, router, nil), Alerts: engine,
+		Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Version: "v0.0-test", Audit: audit.New(worker, router, nil), Alerts: engine,
 	}).Handler())
 	t.Cleanup(srv.Close)
-	return &env{t: t, srv: srv, repo: repo, worker: worker, alerts: engine}
+	return &env{t: t, srv: srv, repo: repo, worker: worker, alerts: engine, ms: ms}
 }
 
 func (e *env) user(name, role string) {

@@ -11,6 +11,9 @@ import (
 var (
 	ErrUserNotFound = errors.New("user not found")
 	ErrUserExists   = errors.New("user already exists")
+	// ErrExternalUser is returned when a password is set for an account that
+	// signs in elsewhere.
+	ErrExternalUser = errors.New("this account signs in with another service and has no password")
 )
 
 // User is an account that can sign in to the web UI.
@@ -23,7 +26,16 @@ type User struct {
 	// unlimited standard users see everything.
 	Limited bool    `json:"limited"`
 	Sources []int64 `json:"sources"`
+	// AuthProvider is "local" (a password) or the integration that signs the
+	// person in. ExternalID identifies them there. A Disabled account can't
+	// sign in.
+	AuthProvider string `json:"auth_provider"`
+	ExternalID   string `json:"-"`
+	Disabled     bool   `json:"disabled"`
 }
+
+// Sign-in providers.
+const ProviderLocal = "local"
 
 // CreateUser stores a new user with an already-hashed password.
 func (r *Repository) CreateUser(ctx context.Context, username, passwordHash, role string, nowMs int64) (int64, error) {
@@ -44,8 +56,8 @@ func (r *Repository) GetUserForLogin(ctx context.Context, username string) (*Use
 	var u User
 	var hash string
 	err := r.db.Read.QueryRowContext(ctx,
-		`SELECT id, username, role, created_at, password_hash FROM users WHERE username = ?`,
-		username).Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &hash)
+		`SELECT id, username, role, created_at, password_hash, auth_provider, disabled FROM users WHERE username = ?`,
+		username).Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &hash, &u.AuthProvider, &u.Disabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, "", ErrUserNotFound
 	}
@@ -57,7 +69,7 @@ func (r *Repository) GetUserForLogin(ctx context.Context, username string) (*Use
 
 // ListUsers returns all users.
 func (r *Repository) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := r.db.Read.QueryContext(ctx, `SELECT id, username, role, limited, created_at FROM users ORDER BY id`)
+	rows, err := r.db.Read.QueryContext(ctx, `SELECT id, username, role, limited, created_at, auth_provider, external_id, disabled FROM users ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -65,7 +77,7 @@ func (r *Repository) ListUsers(ctx context.Context) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt, &u.AuthProvider, &u.ExternalID, &u.Disabled); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -101,8 +113,8 @@ func (r *Repository) userSources(ctx context.Context, userID int64) ([]int64, er
 // GetUser returns a user by id.
 func (r *Repository) GetUser(ctx context.Context, id int64) (*User, error) {
 	var u User
-	err := r.db.Read.QueryRowContext(ctx, `SELECT id, username, role, limited, created_at FROM users WHERE id = ?`, id).
-		Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt)
+	err := r.db.Read.QueryRowContext(ctx, `SELECT id, username, role, limited, created_at, auth_provider, external_id, disabled FROM users WHERE id = ?`, id).
+		Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt, &u.AuthProvider, &u.ExternalID, &u.Disabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -157,7 +169,7 @@ var ErrLastAdmin = errors.New("there must always be at least one admin")
 
 func lastAdminCheck(ctx context.Context, tx *sql.Tx) error {
 	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin'`).Scan(&n); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`).Scan(&n); err != nil {
 		return fmt.Errorf("count admins: %w", err)
 	}
 	if n <= 1 {
@@ -207,6 +219,15 @@ func (r *Repository) SetPassword(ctx context.Context, username, passwordHash str
 		return false, err
 	}
 	defer tx.Rollback()
+	var provider string
+	if err := tx.QueryRowContext(ctx, `SELECT auth_provider FROM users WHERE username = ?`, username).Scan(&provider); errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("get user: %w", err)
+	}
+	if provider != ProviderLocal {
+		return false, ErrExternalUser
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE username = ?`, passwordHash, username)
 	if err != nil {
 		return false, fmt.Errorf("set password: %w", err)
@@ -251,10 +272,10 @@ func (r *Repository) CreateSession(ctx context.Context, tokenHash string, userID
 func (r *Repository) FindSession(ctx context.Context, tokenHash string, nowMs int64) (*User, error) {
 	var u User
 	err := r.db.Read.QueryRowContext(ctx,
-		`SELECT u.id, u.username, u.role, u.limited, u.created_at FROM sessions s
+		`SELECT u.id, u.username, u.role, u.limited, u.created_at, u.auth_provider FROM sessions s
 		 JOIN users u ON u.id = s.user_id
-		 WHERE s.token_hash = ? AND s.expires_at > ?`,
-		tokenHash, nowMs).Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt)
+		 WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0`,
+		tokenHash, nowMs).Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt, &u.AuthProvider)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -281,4 +302,85 @@ func (r *Repository) PurgeExpiredSessions(ctx context.Context, nowMs int64) erro
 		return fmt.Errorf("purge sessions: %w", err)
 	}
 	return nil
+}
+
+// FindExternalUser returns the account for a person at a sign-in provider.
+func (r *Repository) FindExternalUser(ctx context.Context, provider, externalID string) (*User, error) {
+	var id int64
+	err := r.db.Read.QueryRowContext(ctx, `SELECT id FROM users WHERE auth_provider = ? AND external_id = ?`, provider, externalID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find user: %w", err)
+	}
+	return r.GetUser(ctx, id)
+}
+
+// CreateExternalUser adds an account that signs in through a provider. It has
+// no usable password. ErrUserExists means the name is taken (by a local
+// account or another person); the caller must not take it over.
+func (r *Repository) CreateExternalUser(ctx context.Context, provider, externalID, username, role string, nowMs int64) (int64, error) {
+	if provider == ProviderLocal || externalID == "" {
+		return 0, errors.New("an external account needs a provider and an external id")
+	}
+	res, err := r.db.Write.ExecContext(ctx,
+		`INSERT INTO users (username, password_hash, role, created_at, auth_provider, external_id) VALUES (?, '!', ?, ?, ?, ?)`,
+		username, role, nowMs, provider, externalID)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return 0, ErrUserExists
+		}
+		return 0, fmt.Errorf("create user: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// ListExternalUsers returns the accounts that sign in through a provider.
+func (r *Repository) ListExternalUsers(ctx context.Context, provider string) ([]User, error) {
+	all, err := r.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []User
+	for _, u := range all {
+		if u.AuthProvider == provider {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+// SetUserDisabled disables or re-enables an account. Disabling ends its
+// sessions, and is refused for the last enabled admin.
+func (r *Repository) SetUserDisabled(ctx context.Context, id int64, disabled bool) error {
+	tx, err := r.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var role string
+	var was bool
+	if err := tx.QueryRowContext(ctx, `SELECT role, disabled FROM users WHERE id = ?`, id).Scan(&role, &was); errors.Is(err, sql.ErrNoRows) {
+		return ErrUserNotFound
+	} else if err != nil {
+		return fmt.Errorf("get user: %w", err)
+	}
+	if was == disabled {
+		return nil
+	}
+	if disabled && role == "admin" {
+		if err := lastAdminCheck(ctx, tx); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET disabled = ? WHERE id = ?`, disabled, id); err != nil {
+		return fmt.Errorf("set disabled: %w", err)
+	}
+	if disabled {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
+			return fmt.Errorf("clear sessions: %w", err)
+		}
+	}
+	return tx.Commit()
 }

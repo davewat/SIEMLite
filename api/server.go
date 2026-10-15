@@ -23,6 +23,7 @@ import (
 	"siemlite/pkg/auth"
 	"siemlite/pkg/backup"
 	"siemlite/pkg/email"
+	"siemlite/pkg/entra"
 	"siemlite/pkg/ingest"
 	"siemlite/pkg/integrations"
 	"siemlite/pkg/intel"
@@ -61,11 +62,13 @@ type Deps struct {
 	Email   *email.Service // optional: the Email integration's settings
 	// Integrations is the list the Integrations page shows (optional).
 	Integrations *integrations.Registry
-	Updates      *update.Checker // optional: the System page's update card
-	Version      string          // e.g. "v0.7"
-	Audit        *audit.Logger   // optional: records actions as INTERNAL events
-	Alerts       *alerts.Engine  // optional: alert rules
-	Logger       *slog.Logger
+	// Entra signs people in with Microsoft (optional).
+	Entra   *entra.Service
+	Updates *update.Checker // optional: the System page's update card
+	Version string          // e.g. "v0.7"
+	Audit   *audit.Logger   // optional: records actions as INTERNAL events
+	Alerts  *alerts.Engine  // optional: alert rules
+	Logger  *slog.Logger
 }
 
 // Server is the HTTP API.
@@ -151,6 +154,10 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /api/v1/integrations/email", s.handleGetEmail)
 	admin("PUT /api/v1/integrations/email", s.handleSaveEmail)
 	admin("POST /api/v1/integrations/email/test", s.handleTestEmail)
+	admin("GET /api/v1/integrations/entra", s.handleGetEntra)
+	admin("PUT /api/v1/integrations/entra", s.handleSaveEntra)
+	admin("POST /api/v1/integrations/entra/test", s.handleTestEntra)
+	admin("POST /api/v1/integrations/entra/sync", s.handleSyncEntra)
 	// Where email's settings were before the Integrations page (v0.10).
 	admin("GET /api/v1/system/email", s.handleGetEmail)
 	admin("PUT /api/v1/system/email", s.handleSaveEmail)
@@ -164,6 +171,10 @@ func (s *Server) Handler() http.Handler {
 	admin("POST /api/v1/backups/{name}/restore", s.handleRestoreBackup)
 	mux.HandleFunc("POST /api/v1/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/logout", s.handleLogout)
+	// Sign in with Microsoft: public, since they happen before anyone is signed in.
+	mux.HandleFunc("GET /api/v1/auth/providers", s.handleProviders)
+	mux.HandleFunc("GET /api/v1/auth/entra/start", s.handleEntraStart)
+	mux.HandleFunc("GET /api/v1/auth/entra/callback", s.handleEntraCallback)
 	mux.HandleFunc("GET /api/v1/me", s.handleMe)
 	// /health is public but only reveals up/down; detail needs a signed-in user.
 	mux.HandleFunc("GET /health", s.handleHealth)

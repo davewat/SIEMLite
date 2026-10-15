@@ -52,7 +52,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.11` in `.env` and run `docker compose pull && docker compose up -d`.
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.12` in `.env` and run `docker compose pull && docker compose up -d`.
 Or build from the checkout, and deploy and upgrade with one command:
 
 ```sh
@@ -98,7 +98,7 @@ missed it, set a new one: `docker compose exec siemlite siemlite users passwd -u
 - **Users** (admins): add people, set their role, limit what they can see, change passwords.
 - **Sources** (admins): add sources (each gets an access token and ready-to-paste code), see when each source last sent logs, choose how each source's lines are read (Automatic, None or a parser), add logs by hand, and enable, disable or delete a token (Manage).
 - **Parsers** (admins): build, upload, export and edit parsers.
-- **Integrations** (admins): connect SIEMLite to other services. Each integration is a card you set up and then turn on or off; email is the first.
+- **Integrations** (admins): connect SIEMLite to other services. Each integration is a card you set up and then turn on or off: email, and sign-in with Microsoft Entra ID.
 - **System** (admins): the version and whether a newer release is out (with an update button), database size and uptime, and backups: create, schedule, download, upload, restore and delete.
 
 ### Send logs from an app
@@ -198,6 +198,8 @@ the raw text.
 | `GET /api/v1/integrations` | admin | The built-in integrations and their state: `{"integrations": [{"id", "name", "description", "state": "needs_setup"/"off"/"on"/"error", "summary", "configured", "enabled"}]}`. |
 | `POST /api/v1/integrations/{id}/enabled` | admin | Turn an integration on or off, keeping its settings: `{"enabled": true}`. Refused until it is set up. |
 | `GET`/`PUT /api/v1/integrations/email`, `POST /api/v1/integrations/email/test` | admin | The email settings (`{"host", "port", "security": "starttls"/"tls"/"none", "username", "password", "from_address", "from_name", "skip_verify"}`; the password is write-only, and leaving it out keeps the saved one) and a test send (the same fields plus `"to"`). These were `/api/v1/system/email` in v0.10, which still works. |
+| `GET`/`PUT /api/v1/integrations/entra`, `POST /api/v1/integrations/entra/test`, `POST /api/v1/integrations/entra/sync` | admin | The Microsoft Entra ID settings (`{"tenant_id", "client_id", "client_secret", "public_url", "access_group_id", "admin_group_id"}`; the client secret is write-only, and leaving it out keeps the saved one, but only for the same tenant and app), a connection test (the same fields; reports the groups it can read), and an immediate membership check. |
+| `GET /api/v1/auth/providers`, `GET /api/v1/auth/entra/start`, `GET /api/v1/auth/entra/callback` | public | The sign-in page's "Sign in with Microsoft": which buttons to show, where the browser is sent to sign in, and where Microsoft sends it back. Not for scripts. |
 | `GET`/`POST /api/v1/backups`, `PUT /api/v1/backups/settings`, `POST /api/v1/backups/upload` | admin | List backups and the job status, start a backup, set the schedule (`{"interval_hours": 0/6/24/168, "keep"}`), upload a backup file. |
 | `GET`/`DELETE /api/v1/backups/{name}`, `POST /api/v1/backups/{name}/restore` | admin | Download or delete a backup; restore it (SIEMLite restarts). |
 | `POST /api/v1/parsers/test`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; ask the AI model for a parser for `{"lines"}`. |
@@ -446,6 +448,42 @@ The **Integrations** page lists the services SIEMLite can connect to. Each is bu
 integration up first; the switch then turns it on or off without losing its settings. Only admins see the page, and
 turning one on or off is recorded in the [audit log](#audit-log).
 
+## Sign in with Microsoft (Entra ID)
+
+The **Integrations** page has a **Microsoft Entra ID** card. When it is on, the sign-in page offers **Sign in with Microsoft**, and the
+people in one Entra group can sign in with their work account. Everyone else is refused, even if they are in your organization.
+
+**Set it up.** The card has the steps; in short, in the Entra admin center:
+
+1. Register an app (**App registrations**, **New registration**, this directory only). Add a **Web** redirect URI, which the card shows
+   (your SIEMLite address plus `/api/v1/auth/entra/callback`). SIEMLite is https only, so the address must be https.
+2. Copy the **Directory (tenant) ID** and **Application (client) ID**, and create a **client secret** (copy its *Value*).
+3. Under **API permissions**, add the Microsoft Graph **application** permission `GroupMember.Read.All` and **grant admin consent**.
+4. Copy the **Object ID** of the group whose members may sign in. Optionally copy a second group's for Admins.
+
+Enter them on the card, choose **Test connection** (it shows the group names and how many people are in them), then **Save**.
+
+**How it behaves**
+
+- **Who may sign in** is decided by Microsoft Graph at the moment of sign-in, by asking whether the person is in the access group
+  (members of nested groups count). Nothing in the sign-in token is trusted for that.
+- **First sign-in** creates the account (named after their Microsoft user name, lower-cased) as a **Standard** user who sees every
+  source, like a new Standard user made by hand; limit them on the Users page. With an **admin group**, its members are **Admins**
+  and everyone else is Standard; the role follows the group at each sign-in and check. Without one, roles are yours to set.
+- **Leaving the group** switches the account off and ends its sessions within five minutes (SIEMLite checks every five minutes, and
+  you can choose **Check the group now**). It is also refused at the next sign-in. Someone who is added back is switched on again.
+  If Microsoft can't be reached, nothing is changed. An account is never switched off or demoted if it is the last enabled admin.
+- **Accounts are matched by Microsoft's object ID**, not by name. A Microsoft user name that matches an existing local account is
+  refused, never linked to it, so nobody can take over a local account by having the same name.
+- **Password sign-in stays** for local accounts, so keep a local admin in case Microsoft is unreachable. Accounts that sign in with
+  Microsoft have no password. Turning the integration off, or removing it, stops new Microsoft sign-ins but doesn't end sessions that
+  are already open (they last up to 12 hours); the accounts stay.
+- The **client secret** is encrypted like the [email](#email) password (with `siemlite-secret.key`), is never shown again, and is only
+  ever used with the tenant and app it was saved for.
+- Sign-ins, refusals, and changes to these settings are in the [audit log](#audit-log) (`signin.sso`, `signin.sso.failed`,
+  `system.entra.save`, `system.entra.test`, `system.entra.sync`).
+- This is for the Microsoft public cloud. Government and other sovereign clouds use different addresses and aren't supported yet.
+
 ## Email
 
 The **Integrations** page has an **Email** card for the mail server SIEMLite sends email through. (It was on the System page in v0.10; the settings carried over.) Fill in the server,
@@ -488,6 +526,10 @@ There must always be at least one admin, and admins can't delete themselves.
 ./siemlite users passwd -username alice                 # also signs alice out everywhere
 ./siemlite users delete -username alice
 ```
+
+Accounts that sign in with Microsoft (see [Sign in with Microsoft](#sign-in-with-microsoft-entra-id)) are marked **Microsoft** on the
+Users page. They have no password, so **Change password** isn't offered for them. An admin can still change their role and which sources
+they see.
 
 Passwords are stored as bcrypt hashes. Sessions last 12 hours, use an `HttpOnly`, `Secure`, `SameSite=Strict` cookie,
 and end on sign-out. After 10 failed sign-ins in 15 minutes a client address is locked out for the rest of the window.

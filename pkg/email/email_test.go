@@ -365,7 +365,7 @@ func TestServiceKeepsThePasswordSecret(t *testing.T) {
 	if !v.Configured || !v.HasPassword || v.PasswordUnreadable || v.Username != "u" {
 		t.Errorf("view = %+v", v)
 	}
-	if fi, err := os.Stat(svc.keyPath); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(svc.box.Path()); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Errorf("key file: %v %v", fi, err)
 	}
 
