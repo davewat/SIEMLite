@@ -92,7 +92,9 @@ var errRestart = errors.New("restart requested")
 
 func run() error {
 	dbPath := flag.String("db", "siemlite.db", "SQLite database path")
-	addr := flag.String("addr", "localhost:8443", "HTTPS listen address (there is no plain-HTTP listener)")
+	addr := flag.String("addr", "localhost:8443", "HTTPS listen address")
+	httpAddr := flag.String("http-addr", "", "plain-HTTP listen address for a reverse proxy that does the HTTPS, such as Caddy, e.g. 0.0.0.0:8080 (off when empty; never publish it)")
+	trustedProxies := flag.String("trusted-proxies", "", "reverse proxies whose X-Forwarded-For is believed: comma-separated addresses, networks or host names, e.g. caddy")
 	certFile := flag.String("tls-cert", "", "TLS certificate PEM (default: <db dir>/siemlite.crt, self-signed if missing)")
 	keyFile := flag.String("tls-key", "", "TLS private key PEM (default: <db dir>/siemlite.key)")
 	tlsHosts := flag.String("tls-hosts", "", "extra comma-separated DNS names/IPs for a generated certificate")
@@ -118,6 +120,10 @@ func run() error {
 	allow, err := parsePrefixes(*syslogAllow)
 	if err != nil {
 		return fmt.Errorf("-syslog-allow: %w", err)
+	}
+	proxies, err := api.ParseProxies(*trustedProxies)
+	if err != nil {
+		return fmt.Errorf("-trusted-proxies: %w", err)
 	}
 
 	if *certFile == "" {
@@ -345,7 +351,7 @@ func run() error {
 	srv := api.NewServer(*addr, api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: engine,
 		Auth: authn, Intel: intelSvc, Syslog: syslogSrv, Router: router, AI: aiClient,
-		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Audit: auditLog, Alerts: alertEngine,
+		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Proxies: proxies, Audit: auditLog, Alerts: alertEngine,
 		Restart: func() {
 			select {
 			case restartCh <- struct{}{}:
@@ -353,8 +359,23 @@ func run() error {
 			}
 		},
 	})
-	serveErr := make(chan error, 1)
+	proxies.Refresh(ctx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		proxies.Run(bgCtx)
+	}()
+	serveErr := make(chan error, 2)
 	go func() { serveErr <- srv.Start(*certFile, *keyFile) }()
+	if *httpAddr != "" {
+		go func() { serveErr <- srv.StartPlain(*httpAddr) }()
+		if proxies.Configured() {
+			slog.Info("plain HTTP listening for the reverse proxy", "addr", *httpAddr, "trusted_proxies", *trustedProxies)
+		} else {
+			slog.Warn("plain HTTP is listening with no -trusted-proxies: every request will seem to come from the proxy, and anyone who reaches the port can use it",
+				"addr", *httpAddr)
+		}
+	}
 	// A saved update counts as working once it has stayed up for a few seconds.
 	go func() {
 		select {

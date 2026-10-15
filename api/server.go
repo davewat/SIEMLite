@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -63,7 +62,9 @@ type Deps struct {
 	// Integrations is the list the Integrations page shows (optional).
 	Integrations *integrations.Registry
 	// Entra signs people in with Microsoft (optional).
-	Entra   *entra.Service
+	Entra *entra.Service
+	// Proxies are the reverse proxies whose X-Forwarded-For is believed (optional).
+	Proxies *Proxies
 	Updates *update.Checker // optional: the System page's update card
 	Version string          // e.g. "v0.7"
 	Audit   *audit.Logger   // optional: records actions as INTERNAL events
@@ -73,8 +74,9 @@ type Deps struct {
 
 // Server is the HTTP API.
 type Server struct {
-	deps Deps
-	http *http.Server
+	deps  Deps
+	http  *http.Server
+	plain *http.Server // plain HTTP, for a reverse proxy in front (optional)
 
 	// Failed and blocked sign-ins are recorded before anyone has signed in,
 	// so strangers mustn't be able to fill the database with them. Each
@@ -193,7 +195,33 @@ func (s *Server) Start(certFile, keyFile string) error {
 }
 
 // Shutdown gracefully stops the server.
-func (s *Server) Shutdown(ctx context.Context) error { return s.http.Shutdown(ctx) }
+func (s *Server) Shutdown(ctx context.Context) error {
+	err := s.http.Shutdown(ctx)
+	if s.plain != nil {
+		if perr := s.plain.Shutdown(ctx); err == nil {
+			err = perr
+		}
+	}
+	return err
+}
+
+// StartPlain serves plain HTTP on addr until Shutdown, for a reverse proxy
+// (such as Caddy) that does the HTTPS. It must only be reachable by the proxy:
+// with trusted proxies configured, it refuses everyone else.
+func (s *Server) StartPlain(addr string) error {
+	s.plain = &http.Server{
+		Addr:              addr,
+		Handler:           s.deps.Proxies.onlyProxies(s.Handler()),
+		ReadHeaderTimeout: s.http.ReadHeaderTimeout,
+		ReadTimeout:       s.http.ReadTimeout,
+		WriteTimeout:      s.http.WriteTimeout,
+		IdleTimeout:       s.http.IdleTimeout,
+	}
+	if err := s.plain.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
 
 func (s *Server) recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -490,11 +518,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body must be JSON with username and password")
 		return
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	token, user, err := s.deps.Auth.Login(r.Context(), host, req.Username, req.Password)
+	token, user, err := s.deps.Auth.Login(r.Context(), s.clientIP(r), req.Username, req.Password)
 	switch {
 	case errors.Is(err, auth.ErrBadCredentials):
 		who := s.attemptedUser(r, req.Username)
@@ -504,7 +528,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, auth.ErrTooManyAttempts):
 		who := s.attemptedUser(r, req.Username)
-		if !s.firstBlock(clientIP(r)) {
+		if !s.firstBlock(s.clientIP(r)) {
 			w.Header().Set("Retry-After", "900")
 			writeError(w, http.StatusTooManyRequests, err.Error())
 			return
@@ -544,13 +568,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // clientIP is the caller's address.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
+// clientIP is the visitor's address, through a trusted reverse proxy if there
+// is one (see Proxies).
+func (s *Server) clientIP(r *http.Request) string { return s.deps.Proxies.ClientIP(r) }
 
 // attemptedUser names the account a failed sign-in tried. Text that isn't an
 // account name is not recorded: people sometimes type their password into
@@ -640,7 +660,7 @@ func (s *Server) audit(r *http.Request, e audit.Entry) {
 		}
 	}
 	if e.IP == "" {
-		e.IP = clientIP(r)
+		e.IP = s.clientIP(r)
 	}
 	s.deps.Audit.Record(r.Context(), e)
 }

@@ -172,7 +172,7 @@ func clearSSOCookie(w http.ResponseWriter) {
 
 // handleEntraStart sends the browser to Microsoft to sign in.
 func (s *Server) handleEntraStart(w http.ResponseWriter, r *http.Request) {
-	if s.deps.Entra == nil || !s.deps.Auth.AttemptsAllowed(clientIP(r)) {
+	if s.deps.Entra == nil || !s.deps.Auth.AttemptsAllowed(s.clientIP(r)) {
 		s.ssoRedirect(w, r, "off")
 		return
 	}
@@ -198,7 +198,7 @@ func (s *Server) handleEntraCallback(w http.ResponseWriter, r *http.Request) {
 		s.ssoRedirect(w, r, "off")
 		return
 	}
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if !s.deps.Auth.AttemptsAllowed(ip) {
 		s.ssoRedirect(w, r, "too_many")
 		return
