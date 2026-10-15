@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -456,5 +457,77 @@ func TestServiceKeepsThePasswordSecret(t *testing.T) {
 	}
 	if err := svc.Send(ctx, Message{To: []string{"a@b.co"}}); err == nil || !strings.Contains(err.Error(), "isn't set up") {
 		t.Errorf("send when unset: %v", err)
+	}
+}
+
+func TestEnabledSwitchKeepsTheSettings(t *testing.T) {
+	ctx := context.Background()
+	st := &memStore{m: map[string]string{}}
+	svc := NewService(st, filepath.Join(t.TempDir(), "k.key"))
+	f := &fakeServer{}
+	host, port := startServer(t, f)
+	msg := Message{To: []string{"ann@example.com"}, Subject: "s", Body: "b"}
+
+	// Nothing saved: not configured, and there's nothing to turn on.
+	if info, err := svc.Info(ctx); err != nil || info.Configured || info.Enabled {
+		t.Fatalf("empty info = %+v %v", info, err)
+	}
+	var bad InputError
+	if err := svc.SetEnabled(ctx, true); !errors.As(err, &bad) {
+		t.Errorf("turning on with nothing saved: %v", err)
+	}
+	if svc.ID() != "email" || svc.Name() != "Email" || svc.Description() == "" {
+		t.Error("integration details")
+	}
+
+	cfg := cfgFor(host, port, SecurityNone)
+	if err := svc.Save(ctx, cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := svc.Info(ctx); !info.Configured || !info.Enabled || !strings.Contains(info.Summary, "siem@example.com") {
+		t.Errorf("saved info = %+v", info)
+	}
+	if err := svc.Send(ctx, msg); err != nil {
+		t.Fatalf("send while on: %v", err)
+	}
+
+	// Off: settings kept, sending refused, a test of the form still works.
+	if err := svc.SetEnabled(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := svc.Get(ctx); !v.Configured || v.Enabled || v.Host != host {
+		t.Errorf("off view = %+v", v)
+	}
+	if info, _ := svc.Info(ctx); !info.Configured || info.Enabled {
+		t.Errorf("off info = %+v", info)
+	}
+	if svc.Configured(ctx) {
+		t.Error("Configured should be false while email is off")
+	}
+	if err := svc.Send(ctx, msg); err == nil || !strings.Contains(err.Error(), "turned off") {
+		t.Errorf("send while off: %v", err)
+	}
+	if err := svc.SendWith(ctx, cfg, nil, msg); err != nil {
+		t.Errorf("testing the form while off: %v", err)
+	}
+	// Saving other changes while off keeps it off.
+	cfg.FromName = "Changed"
+	if err := svc.Save(ctx, cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := svc.Get(ctx); v.Enabled || v.FromName != "Changed" {
+		t.Errorf("save while off turned it on or lost the change: %+v", v)
+	}
+	if err := svc.SetEnabled(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Send(ctx, msg); err != nil {
+		t.Errorf("send after turning on: %v", err)
+	}
+
+	// Settings saved before the switch existed (no "disabled" key) are on.
+	st.m[settingKey] = `{"host":"` + host + `","port":` + strconv.Itoa(port) + `,"security":"none","from_address":"siem@example.com"}`
+	if v, _ := svc.Get(ctx); !v.Enabled {
+		t.Error("an older saved configuration should be on")
 	}
 }

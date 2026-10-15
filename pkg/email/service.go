@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"siemlite/pkg/integrations"
 )
 
 const settingKey = "smtp"
@@ -44,12 +46,16 @@ func NewService(store Store, keyPath string) *Service {
 type stored struct {
 	Config
 	Password string `json:"password,omitempty"`
+	// Disabled turns email off while keeping its settings. It is a "not" so
+	// that settings saved before the Integrations page existed stay on.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // View is what the System page shows. The password is never included.
 type View struct {
 	Config
 	Configured  bool `json:"configured"`
+	Enabled     bool `json:"enabled"`
 	HasPassword bool `json:"has_password"`
 	// PasswordUnreadable means a password was saved but this server's key
 	// can't open it, as after a backup was restored onto another server.
@@ -75,6 +81,7 @@ func (s *Service) Get(ctx context.Context) (View, error) {
 		return View{}, err
 	}
 	v := View{Config: st.Config, Configured: st.Host != "", HasPassword: st.Password != ""}
+	v.Enabled = v.Configured && !st.Disabled
 	if st.Password != "" {
 		if _, err := s.open(st.Password); err != nil {
 			v.PasswordUnreadable = true
@@ -113,7 +120,7 @@ func (s *Service) Save(ctx context.Context, cfg Config, password *string) error 
 	if password == nil && old.Password != "" && !old.Config.sameServer(cfg) {
 		return InputError("You changed the server or login, so enter the password again. The saved password is only used with the server it was saved for.")
 	}
-	st := stored{Config: cfg, Password: old.Password}
+	st := stored{Config: cfg, Password: old.Password, Disabled: old.Disabled}
 	if password != nil {
 		st.Password = ""
 		if *password != "" {
@@ -129,10 +136,58 @@ func (s *Service) Save(ctx context.Context, cfg Config, password *string) error 
 	return s.store.SetSetting(ctx, settingKey, string(b))
 }
 
-// Configured reports whether a server is set up.
+// Configured reports whether a server is set up and email is on.
 func (s *Service) Configured(ctx context.Context) bool {
 	v, err := s.Get(ctx)
-	return err == nil && v.Configured
+	return err == nil && v.Enabled
+}
+
+// The Integrations page's view of email.
+
+// ID is the integration's id.
+func (s *Service) ID() string { return "email" }
+
+// Name is what the page calls it.
+func (s *Service) Name() string { return "Email" }
+
+// Description says what it is for.
+func (s *Service) Description() string {
+	return "Send email through your own mail server, for the features that notify people."
+}
+
+// Info reports the card's state.
+func (s *Service) Info(ctx context.Context) (integrations.Info, error) {
+	v, err := s.Get(ctx)
+	if err != nil {
+		return integrations.Info{}, err
+	}
+	info := integrations.Info{Configured: v.Configured, Enabled: v.Enabled}
+	if v.Configured {
+		info.Summary = fmt.Sprintf("Sending as %s through %s:%d.", v.FromAddress, v.Host, v.Port)
+		if v.PasswordUnreadable {
+			info.Summary += " The saved password can't be read on this server; enter it again."
+		}
+	}
+	return info, nil
+}
+
+// SetEnabled turns email on or off without touching the settings.
+func (s *Service) SetEnabled(ctx context.Context, on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.load(ctx)
+	if err != nil {
+		return err
+	}
+	if st.Host == "" {
+		return InputError("Set up the mail server first.")
+	}
+	st.Disabled = !on
+	b, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	return s.store.SetSetting(ctx, settingKey, string(b))
 }
 
 // Send mails m through the saved server.
@@ -143,6 +198,9 @@ func (s *Service) Send(ctx context.Context, m Message) error {
 	}
 	if st.Host == "" {
 		return errors.New("Email isn't set up yet. Save the mail server's settings first.")
+	}
+	if st.Disabled {
+		return errors.New("Email is turned off. Turn it on in Integrations.")
 	}
 	return s.send(ctx, st, m)
 }

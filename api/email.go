@@ -11,6 +11,7 @@ import (
 	"siemlite/pkg/audit"
 	"siemlite/pkg/auth"
 	"siemlite/pkg/email"
+	"siemlite/pkg/integrations"
 )
 
 // emailRequest is the System page's email form. Password is a pointer so the
@@ -142,4 +143,54 @@ func onHost(h string) string {
 		return ""
 	}
 	return " on " + h
+}
+
+// handleListIntegrations lists the built-in integrations and their state.
+func (s *Server) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Integrations == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"integrations": []integrations.Info{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"integrations": s.deps.Integrations.List(r.Context())})
+}
+
+// handleSetIntegrationEnabled turns an integration on or off, keeping its settings.
+func (s *Server) handleSetIntegrationEnabled(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Integrations == nil {
+		writeError(w, http.StatusNotFound, "there are no integrations on this server")
+		return
+	}
+	it, ok := s.deps.Integrations.Get(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "there is no integration called "+r.PathValue("id"))
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &body, 1<<10) {
+		return
+	}
+	if body.Enabled == nil {
+		writeError(w, http.StatusBadRequest, `Send {"enabled": true} or {"enabled": false}.`)
+		return
+	}
+	who := auth.FromContext(r.Context()).Name
+	if err := it.SetEnabled(r.Context(), *body.Enabled); err != nil {
+		var bad email.InputError
+		if errors.As(err, &bad) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.internal(w, "turn "+it.ID()+" on or off", err)
+		return
+	}
+	verb := "turned off"
+	if *body.Enabled {
+		verb = "turned on"
+	}
+	s.deps.Logger.Info("integration switched", "integration", it.ID(), "enabled", *body.Enabled, "by", who)
+	s.audit(r, audit.Entry{Action: "integration." + map[bool]string{true: "enable", false: "disable"}[*body.Enabled], Severity: 3,
+		Message: fmt.Sprintf("%s %s the %s integration", who, verb, it.Name()), Fields: map[string]string{"target": it.ID()}})
+	writeJSON(w, http.StatusOK, integrations.Describe(r.Context(), it))
 }

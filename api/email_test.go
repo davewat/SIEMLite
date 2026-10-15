@@ -173,3 +173,76 @@ func keys(m map[string]any) []string {
 	}
 	return out
 }
+
+func TestIntegrationsAPI(t *testing.T) {
+	e := newEnv(t)
+	e.user("root", auth.RoleAdmin)
+	root := e.client()
+	e.login(root, "root", password)
+	_, port := newSMTPSink(t)
+
+	type card struct {
+		ID, Name, Description, State, Summary string
+		Configured, Enabled                   bool
+	}
+	var list struct{ Integrations []card }
+	if got := e.call(root, "GET", "/api/v1/integrations", nil, &list, nil); got != 200 || len(list.Integrations) != 1 {
+		t.Fatalf("list = %d %+v", got, list)
+	}
+	if c := list.Integrations[0]; c.ID != "email" || c.Name != "Email" || c.State != "needs_setup" || c.Description == "" {
+		t.Errorf("email card = %+v", c)
+	}
+
+	// Nothing to turn on yet.
+	var er map[string]string
+	if got := e.call(root, "POST", "/api/v1/integrations/email/enabled", map[string]any{"enabled": true}, &er, nil); got != 400 || er["error"] == "" {
+		t.Errorf("enable with nothing saved = %d %v", got, er)
+	}
+	if got := e.call(root, "POST", "/api/v1/integrations/nope/enabled", map[string]any{"enabled": true}, nil, nil); got != 404 {
+		t.Errorf("unknown integration = %d", got)
+	}
+	if got := e.call(root, "POST", "/api/v1/integrations/email/enabled", map[string]any{}, &er, nil); got != 400 {
+		t.Errorf("no enabled field = %d", got)
+	}
+
+	// Save through the new path; the old path still reaches the same settings.
+	form := map[string]any{"host": "127.0.0.1", "port": port, "security": "none", "from_address": "siem@example.com", "from_name": "SIEMLite", "password": "pw"}
+	var v map[string]any
+	if got := e.call(root, "PUT", "/api/v1/integrations/email", form, &v, nil); got != 200 || v["configured"] != true || v["enabled"] != true {
+		t.Fatalf("save = %d %v", got, v)
+	}
+	var old map[string]any
+	if got := e.call(root, "GET", "/api/v1/system/email", nil, &old, nil); got != 200 || old["host"] != "127.0.0.1" || old["has_password"] != true {
+		t.Errorf("old path = %d %v", got, old)
+	}
+	if _, leaked := old["password"]; leaked {
+		t.Error("the password came back")
+	}
+	e.call(root, "GET", "/api/v1/integrations", nil, &list, nil)
+	if c := list.Integrations[0]; c.State != "on" || !strings.Contains(c.Summary, "127.0.0.1") {
+		t.Errorf("on card = %+v", c)
+	}
+
+	// Off keeps the settings; saving other changes while off keeps it off.
+	var one card
+	if got := e.call(root, "POST", "/api/v1/integrations/email/enabled", map[string]any{"enabled": false}, &one, nil); got != 200 || one.State != "off" || !one.Configured || one.Enabled {
+		t.Fatalf("turn off = %d %+v", got, one)
+	}
+	form["from_name"], form["password"] = "Renamed", nil
+	delete(form, "password")
+	if got := e.call(root, "PUT", "/api/v1/integrations/email", form, &v, nil); got != 200 || v["enabled"] != false || v["from_name"] != "Renamed" || v["has_password"] != true {
+		t.Errorf("save while off = %d %v", got, v)
+	}
+	if got := e.call(root, "POST", "/api/v1/integrations/email/enabled", map[string]any{"enabled": true}, &one, nil); got != 200 || one.State != "on" {
+		t.Errorf("turn on = %d %+v", got, one)
+	}
+
+	// Removing the settings returns it to needing setup.
+	if got := e.call(root, "PUT", "/api/v1/integrations/email", map[string]any{"host": ""}, &v, nil); got != 200 {
+		t.Fatalf("clear = %d", got)
+	}
+	e.call(root, "GET", "/api/v1/integrations", nil, &list, nil)
+	if list.Integrations[0].State != "needs_setup" {
+		t.Errorf("after clear = %+v", list.Integrations[0])
+	}
+}
