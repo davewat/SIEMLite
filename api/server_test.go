@@ -38,9 +38,13 @@ type env struct {
 	worker *ingest.Worker
 	alerts *alerts.Engine
 	ms     *entratest.Microsoft // the fake Microsoft that Entra sign-in talks to
+	deps   api.Deps
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
+
+// newEnvWith is newEnv with a chance to change the server's dependencies.
+func newEnvWith(t *testing.T, change func(*api.Deps)) *env {
 	t.Helper()
 	auth.HashCost = bcrypt.MinCost // keep tests fast
 
@@ -60,12 +64,16 @@ func newEnv(t *testing.T) *env {
 	entraSvc.Authority, entraSvc.Graph = ms.URL, ms.URL+"/v1.0"
 	emailSvc := email.NewService(repo, filepath.Join(t.TempDir(), "k.key"))
 	engine := alerts.New(repo, nil)
-	srv := httptest.NewTLSServer(api.NewServer("", api.Deps{
+	deps := api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: search.NewEngine(repo), Auth: auth.New(repo, nil), Router: router,
 		Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Version: "v0.0-test", Audit: audit.New(worker, router, nil), Alerts: engine,
-	}).Handler())
+	}
+	if change != nil {
+		change(&deps)
+	}
+	srv := httptest.NewTLSServer(api.NewServer("", deps).Handler())
 	t.Cleanup(srv.Close)
-	return &env{t: t, srv: srv, repo: repo, worker: worker, alerts: engine, ms: ms}
+	return &env{t: t, srv: srv, repo: repo, worker: worker, alerts: engine, ms: ms, deps: deps}
 }
 
 func (e *env) user(name, role string) {

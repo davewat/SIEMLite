@@ -12,7 +12,7 @@ a built-in web UI and a small JSON API.
 - **A quiet web UI**: one search field to start, light and dark themes (or follow the system), and fonts bundled
   in the binary, so the UI never contacts a font service.
 - **Full-text search**: SQLite FTS5 over the message, program, host, user, addresses and parsed fields, combined with time, severity, category, IP, user, source, country, ASN and threat filters.
-- **HTTPS only**: no plain-HTTP listener. Self-signed certificate generated on first start, or bring your own.
+- **HTTPS only**: a self-signed certificate is generated on first start, or bring your own. To put it on the internet, Caddy can serve it with a Let's Encrypt certificate (see [Run on the internet](#run-on-the-internet)).
 - **Sources and parsers**: each application gets an access token that can only send logs, with a "last used" time and
   a parser of your choice. Build parsers in the UI from sample lines, upload them, or let a local AI model suggest one.
 - **Alerts**: rules that watch for patterns, like 10 failed SSH passwords from one address in 5 minutes, with four
@@ -52,7 +52,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.12` in `.env` and run `docker compose pull && docker compose up -d`.
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.13` in `.env` and run `docker compose pull && docker compose up -d`.
 Or build from the checkout, and deploy and upgrade with one command:
 
 ```sh
@@ -83,6 +83,39 @@ missed it, set a new one: `docker compose exec siemlite siemlite users passwd -u
   sender on the Docker host itself, which appears as the Docker network's gateway address.
 - The image is about 25 MB, has no shell, and runs as an unprivileged user. Docker restarts it if `/health` stops
   answering.
+
+### Run on the internet
+
+To serve SIEMLite on a public domain, let [Caddy](https://caddyserver.com) be its web server. Caddy gets a certificate from
+Let's Encrypt, renews it by itself, and redirects plain HTTP to HTTPS. SIEMLite's web ports then aren't published at all:
+only Caddy can reach SIEMLite, over a private port on the Docker network. Before you start:
+
+- A DNS name (an A or AAAA record) that points at this server, such as `siem.example.com`.
+- Ports 80 and 443 reachable from the internet. Let's Encrypt connects to one of them to check you control the name.
+
+Then add to `.env` and run `docker compose up -d`:
+
+```sh
+COMPOSE_FILE=compose.yaml:compose.public.yaml
+SIEMLITE_DOMAIN=siem.example.com
+```
+
+Open `https://siem.example.com`. `docker compose logs caddy` shows the certificate being obtained (usually within seconds).
+
+- **Visitors' addresses** reach SIEMLite in `X-Forwarded-For`, which it believes only from Caddy (`-trusted-proxies=caddy`),
+  so sign-in lockouts apply to the person who failed, not to everyone, and the audit log shows who it was. Caddy throws away any
+  `X-Forwarded-For` a visitor sends, so it can't be forged, and SIEMLite's plain port refuses anyone but Caddy.
+- **Syslog** is still published on its own ports, and senders outside loopback and private networks are refused unless you list
+  them in `SIEMLITE_SYSLOG_ALLOW`. Don't open syslog to the internet: it has no authentication. Syslog over TLS keeps SIEMLite's own
+  certificate.
+- **Apps sending logs** use `https://siem.example.com/api/v1/logs`. The certificate is trusted everywhere, so the snippets on the
+  Connect screen work without `siemlite.crt`; remove those lines.
+- **Microsoft sign-in**: set the SIEMLite address on the Entra card to `https://siem.example.com`.
+- Caddy keeps the certificate in the `caddy-data` volume; keep it, or Caddy asks Let's Encrypt again on every rebuild. It adds
+  `Strict-Transport-Security` and compresses responses. To change anything else, edit `caddy/Caddyfile`.
+- Inside the Docker network SIEMLite still serves HTTPS on 8443 (the health check and the log generator use it); it is not
+  published.
+- Not for a private network with no public name: Let's Encrypt can't reach it. Keep the default setup there.
 
 ### The pages
 
@@ -596,6 +629,8 @@ by spaces.
 | Flag | Default | Meaning |
 |---|---|---|
 | `-addr` | `localhost:8443` | HTTPS listen address |
+| `-http-addr` | | Plain-HTTP listen address for a reverse proxy that does the HTTPS, such as Caddy (off when empty). Never publish it |
+| `-trusted-proxies` | | Reverse proxies whose `X-Forwarded-For` is believed: addresses, networks or host names, e.g. `caddy`. With it set, the `-http-addr` port refuses everyone else |
 | `-db` | `siemlite.db` | SQLite database path; events go in a folder beside it named after it (`siemlite-events`) |
 | `-retention-days` | `30` | Delete events older than this many days (checked daily; whole days are deleted as files) |
 | `-tls-cert`, `-tls-key` | `<db dir>/siemlite.crt`, `.key` | Certificate and key; a self-signed pair is generated if both are missing |

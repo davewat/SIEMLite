@@ -1,0 +1,21 @@
+# Caddy serves SIEMLite on your domain, with a certificate from Let's Encrypt
+# that it gets and renews by itself. Used by compose.public.yaml; see "Run on
+# the internet" in the README.
+#
+# Caddy passes each visitor's address on in X-Forwarded-For, and SIEMLite
+# believes it only from Caddy (-trusted-proxies=caddy), so sign-in lockouts and
+# the audit log see the visitor, not Caddy. Caddy drops any X-Forwarded-For a
+# visitor sends, so it can't be forged.
+{$SIEMLITE_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	reverse_proxy siemlite:8080 {
+		# Stream (backups can be gigabytes) instead of buffering.
+		flush_interval -1
+	}
+}
