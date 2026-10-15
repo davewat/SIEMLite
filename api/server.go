@@ -65,6 +65,11 @@ type Deps struct {
 	Entra *entra.Service
 	// Proxies are the reverse proxies whose X-Forwarded-For is believed (optional).
 	Proxies *Proxies
+	// BehindProxy is set when SIEMLite runs behind Caddy (compose.public.yaml).
+	BehindProxy bool
+	// Domain is the public domain from SIEMLITE_DOMAIN, used when none is set
+	// on the System page.
+	Domain  string
 	Updates *update.Checker // optional: the System page's update card
 	Version string          // e.g. "v0.7"
 	Audit   *audit.Logger   // optional: records actions as INTERNAL events
@@ -77,6 +82,10 @@ type Server struct {
 	deps  Deps
 	http  *http.Server
 	plain *http.Server // plain HTTP, for a reverse proxy in front (optional)
+
+	domainMu     sync.Mutex // the public domain saved on the System page (public.go)
+	domain       string
+	domainLoaded bool
 
 	// Failed and blocked sign-ins are recorded before anyone has signed in,
 	// so strangers mustn't be able to fill the database with them. Each
@@ -149,6 +158,8 @@ func (s *Server) Handler() http.Handler {
 	admin("PUT /api/v1/rules/{id}", s.handleSaveRule)
 	admin("DELETE /api/v1/rules/{id}", s.handleDeleteRule)
 	admin("GET /api/v1/system", s.handleSystem)
+	admin("GET /api/v1/system/public", s.handleGetPublic)
+	admin("PUT /api/v1/system/public", s.handleSavePublic)
 	admin("GET /api/v1/system/update", s.handleUpdateStatus)
 	admin("POST /api/v1/system/update", s.handleApplyUpdate)
 	admin("GET /api/v1/integrations", s.handleListIntegrations)
@@ -175,13 +186,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/logout", s.handleLogout)
 	// Sign in with Microsoft: public, since they happen before anyone is signed in.
 	mux.HandleFunc("GET /api/v1/auth/providers", s.handleProviders)
+	// Caddy asks this before getting a certificate (only Caddy may; see public.go).
+	mux.HandleFunc("GET /api/v1/caddy/ask", s.handleCaddyAsk)
 	mux.HandleFunc("GET /api/v1/auth/entra/start", s.handleEntraStart)
 	mux.HandleFunc("GET /api/v1/auth/entra/callback", s.handleEntraCallback)
 	mux.HandleFunc("GET /api/v1/me", s.handleMe)
 	// /health is public but only reveals up/down; detail needs a signed-in user.
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.Handle("GET /", web.Handler())
-	return s.recoverer(mux)
+	return s.recoverer(s.publicHostGuard(mux))
 }
 
 // Start serves HTTPS (there is no plaintext listener) until Shutdown; it

@@ -94,6 +94,7 @@ func run() error {
 	dbPath := flag.String("db", "siemlite.db", "SQLite database path")
 	addr := flag.String("addr", "localhost:8443", "HTTPS listen address")
 	httpAddr := flag.String("http-addr", "", "plain-HTTP listen address for a reverse proxy that does the HTTPS, such as Caddy, e.g. 0.0.0.0:8080 (off when empty; never publish it)")
+	domain := flag.String("domain", "", "public domain Caddy serves SIEMLite on (compose.public.yaml), until one is set on the System page")
 	trustedProxies := flag.String("trusted-proxies", "", "reverse proxies whose X-Forwarded-For is believed: comma-separated addresses, networks or host names, e.g. caddy")
 	certFile := flag.String("tls-cert", "", "TLS certificate PEM (default: <db dir>/siemlite.crt, self-signed if missing)")
 	keyFile := flag.String("tls-key", "", "TLS private key PEM (default: <db dir>/siemlite.key)")
@@ -351,7 +352,7 @@ func run() error {
 	srv := api.NewServer(*addr, api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: engine,
 		Auth: authn, Intel: intelSvc, Syslog: syslogSrv, Router: router, AI: aiClient,
-		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Proxies: proxies, Audit: auditLog, Alerts: alertEngine,
+		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Proxies: proxies, BehindProxy: *httpAddr != "" && proxies.Configured(), Domain: *domain, Audit: auditLog, Alerts: alertEngine,
 		Restart: func() {
 			select {
 			case restartCh <- struct{}{}:

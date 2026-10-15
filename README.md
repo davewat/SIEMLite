@@ -52,7 +52,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.13` in `.env` and run `docker compose pull && docker compose up -d`.
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.14` in `.env` and run `docker compose pull && docker compose up -d`.
 Or build from the checkout, and deploy and upgrade with one command:
 
 ```sh
@@ -100,7 +100,13 @@ COMPOSE_FILE=compose.yaml:compose.public.yaml
 SIEMLITE_DOMAIN=siem.example.com
 ```
 
-Open `https://siem.example.com`. `docker compose logs caddy` shows the certificate being obtained (usually within seconds).
+Open `https://siem.example.com`. Caddy gets the certificate on that first visit (usually within seconds); `docker compose logs caddy`
+shows it.
+
+**Changing the domain** is done on the **System** page, under **Web address**; no restart or file edit is needed. Caddy asks SIEMLite
+before it gets a certificate for any name, and SIEMLite agrees only to the domain set there (or, until one is, `SIEMLITE_DOMAIN`), so
+nobody can make Caddy request certificates for names that aren't yours. When you move to a new domain, visitors who use the old one are
+redirected to it. `SIEMLITE_DOMAIN` is still needed in `.env`: it is where SIEMLite starts, since it can't be reached any other way.
 
 - **Visitors' addresses** reach SIEMLite in `X-Forwarded-For`, which it believes only from Caddy (`-trusted-proxies=caddy`),
   so sign-in lockouts apply to the person who failed, not to everyone, and the audit log shows who it was. Caddy throws away any
@@ -134,7 +140,7 @@ Open `https://siem.example.com`. `docker compose logs caddy` shows the certifica
 - **Sources** (admins): add sources (each gets an access token and ready-to-paste code), see when each source last sent logs, choose how each source's lines are read (Automatic, None or a parser), add logs by hand, and enable, disable or delete a token (Manage).
 - **Parsers** (admins): build, upload, export and edit parsers.
 - **Integrations** (admins): connect SIEMLite to other services. Each integration is a card you set up and then turn on or off: email, and sign-in with Microsoft Entra ID.
-- **System** (admins): the version and whether a newer release is out (with an update button), database size and uptime, and backups: create, schedule, download, upload, restore and delete.
+- **System** (admins): the version and whether a newer release is out (with an update button), the web address Caddy serves it on, database size and uptime, and backups: create, schedule, download, upload, restore and delete.
 
 ### Send logs from an app
 
@@ -230,6 +236,8 @@ the raw text.
 | `PATCH /api/v1/alerts/{id}` | same | Acknowledge, close or reopen: `{"status": "acknowledged"}`. |
 | `GET /api/v1/rules`, `POST /api/v1/rules`, `PUT`/`DELETE /api/v1/rules/{id}` | any signed-in user (list), admin | Alert rules: `{"name", "description", "enabled", "severity", "query", "min_severity", "threat_only", "source_id", "group_by", "threshold", "window_minutes"}`. |
 | `GET /api/v1/system` | admin | Database size and version, uptime, backups folder and free space. |
+| `GET`/`PUT /api/v1/system/public` | admin | The public domain Caddy serves SIEMLite on: `{"domain"}` (empty removes it). Reports where the domain comes from, whether Caddy is in front, and what the name resolves to. |
+| `GET /api/v1/caddy/ask?domain=` | Caddy only | Caddy asks this before getting a certificate: `200` for the public domain, `404` for anything else. Refused for anyone but a trusted proxy asking directly. |
 | `GET /api/v1/integrations` | admin | The built-in integrations and their state: `{"integrations": [{"id", "name", "description", "state": "needs_setup"/"off"/"on"/"error", "summary", "configured", "enabled"}]}`. |
 | `POST /api/v1/integrations/{id}/enabled` | admin | Turn an integration on or off, keeping its settings: `{"enabled": true}`. Refused until it is set up. |
 | `GET`/`PUT /api/v1/integrations/email`, `POST /api/v1/integrations/email/test` | admin | The email settings (`{"host", "port", "security": "starttls"/"tls"/"none", "username", "password", "from_address", "from_name", "skip_verify"}`; the password is write-only, and leaving it out keeps the saved one) and a test send (the same fields plus `"to"`). These were `/api/v1/system/email` in v0.10, which still works. |
@@ -632,6 +640,7 @@ by spaces.
 |---|---|---|
 | `-addr` | `localhost:8443` | HTTPS listen address |
 | `-http-addr` | | Plain-HTTP listen address for a reverse proxy that does the HTTPS, such as Caddy (off when empty). Never publish it |
+| `-domain` | | The public domain Caddy serves SIEMLite on, until one is set on the System page (`SIEMLITE_DOMAIN`) |
 | `-trusted-proxies` | | Reverse proxies whose `X-Forwarded-For` is believed: addresses, networks or host names, e.g. `caddy`. With it set, the `-http-addr` port refuses everyone else |
 | `-db` | `siemlite.db` | SQLite database path; events go in a folder beside it named after it (`siemlite-events`) |
 | `-retention-days` | `30` | Delete events older than this many days (checked daily; whole days are deleted as files) |
