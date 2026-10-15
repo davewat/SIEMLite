@@ -104,7 +104,9 @@ Open `https://siem.example.com`. `docker compose logs caddy` shows the certifica
 
 - **Visitors' addresses** reach SIEMLite in `X-Forwarded-For`, which it believes only from Caddy (`-trusted-proxies=caddy`),
   so sign-in lockouts apply to the person who failed, not to everyone, and the audit log shows who it was. Caddy throws away any
-  `X-Forwarded-For` a visitor sends, so it can't be forged, and SIEMLite's plain port refuses anyone but Caddy.
+  `X-Forwarded-For` a visitor sends, so it can't be forged, and SIEMLite's plain port refuses anyone but Caddy. Caddy runs on a
+  Docker network (`edge`) that only SIEMLite shares, so no other container can ever take an address SIEMLite trusts as Caddy's;
+  don't add other services to it.
 - **Syslog** is still published on its own ports, and senders outside loopback and private networks are refused unless you list
   them in `SIEMLITE_SYSLOG_ALLOW`. Don't open syslog to the internet: it has no authentication. Syslog over TLS keeps SIEMLite's own
   certificate.

@@ -17,8 +17,11 @@ import (
 // log would record the proxy's address instead of the visitor's.
 //
 // Entries are IP addresses, networks (CIDR) or host names. Host names are
-// looked up again every 30 seconds, so a proxy container that restarts with a
-// new address is still recognised.
+// looked up again every few seconds (refreshEvery), so a proxy container that
+// restarts with a new address is recognised, and its old address stops being
+// trusted, quickly. Between lookups an old address is still trusted, so a host
+// name should only be used where no other container can take that address
+// over: compose.public.yaml puts Caddy on a network it shares only with SIEMLite.
 type Proxies struct {
 	nets  []netip.Prefix
 	hosts []string
@@ -84,12 +87,15 @@ func (p *Proxies) Refresh(ctx context.Context) {
 	p.mu.Unlock()
 }
 
+// refreshEvery is how often host names are looked up again.
+const refreshEvery = 5 * time.Second
+
 // Run keeps host names up to date until ctx ends.
 func (p *Proxies) Run(ctx context.Context) {
 	if p == nil || len(p.hosts) == 0 {
 		return
 	}
-	t := time.NewTicker(30 * time.Second)
+	t := time.NewTicker(refreshEvery)
 	defer t.Stop()
 	for {
 		select {
