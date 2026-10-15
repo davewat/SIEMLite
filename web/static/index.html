@@ -328,6 +328,15 @@
   .integ-switch input:disabled ~ .track { opacity: .45; }
   .integ-body { border-top: 1px solid var(--rule); padding: 18px 20px; }
   .mail { display: grid; gap: 16px; }
+  .howto { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 14px; font-size: 14px; }
+  .howto summary { cursor: pointer; font-weight: 600; }
+  .howto ol { margin: 10px 0 6px; padding-left: 22px; display: grid; gap: 6px; }
+  .copy-row { display: flex; gap: 8px; }
+  .copy-row .input { flex: 1; }
+  .sso-row { display: grid; gap: 14px; }
+  .sso-or { margin: 4px 0 0; display: flex; align-items: center; gap: 12px; color: var(--ink-2); font-size: 13px; }
+  .sso-or::before, .sso-or::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+  .login .sso-row .btn { height: 42px; justify-content: center; }
   .mail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px 16px; }
   .mail-grid .wide { grid-column: 1 / -1; }
   .mail-grid .wide-2 { grid-column: span 2; }
@@ -421,6 +430,10 @@
     <label class="field-label">Password <input class="input" id="password" type="password" autocomplete="current-password" required></label>
     <button class="btn btn-primary" type="submit" id="login-btn">Sign in</button>
     <p id="login-err" class="notice bad" role="alert" hidden></p>
+    <div id="sso-row" class="sso-row" hidden>
+      <p class="sso-or"><span>or</span></p>
+      <a class="btn" id="sso-entra" href="/api/v1/auth/entra/start">Sign in with Microsoft</a>
+    </div>
   </form>
 </div>
 
@@ -804,6 +817,62 @@
           </form>
         </div>
       </section>
+      <section class="panel integ" id="int-entra" data-integration="entra" aria-labelledby="int-entra-title">
+        <div class="integ-head">
+          <div class="integ-title"><h2 id="int-entra-title">Microsoft Entra ID</h2><span class="pill integ-state">…</span></div>
+          <p class="hint integ-summary">Let the people in an Entra group sign in to SIEMLite with their Microsoft account.</p>
+          <div class="integ-controls">
+            <label class="switch integ-switch"><span>On</span><input type="checkbox" disabled><span class="track"></span></label>
+            <button class="btn integ-toggle" type="button" aria-expanded="false" aria-controls="int-entra-body">Set up</button>
+          </div>
+        </div>
+        <div class="integ-body" id="int-entra-body" hidden>
+          <form class="mail" id="entra-form" autocomplete="off">
+            <p class="hint" id="entra-status">Checking…</p>
+            <details class="howto">
+              <summary>How to set this up in Microsoft Entra</summary>
+              <ol>
+                <li>In the Entra admin center, open <b>App registrations</b> and choose <b>New registration</b>. Pick <b>Accounts in this organizational directory only</b>. Under <b>Redirect URI</b>, choose <b>Web</b> and paste the Redirect URL shown below.</li>
+                <li>On the app's <b>Overview</b> page, copy the <b>Directory (tenant) ID</b> and the <b>Application (client) ID</b> into the fields below.</li>
+                <li>Under <b>Certificates &amp; secrets</b>, create a <b>New client secret</b> and copy its <b>Value</b> (it is shown once).</li>
+                <li>Under <b>API permissions</b>, choose <b>Add a permission</b>, <b>Microsoft Graph</b>, <b>Application permissions</b>, add <b>GroupMember.Read.All</b>, then choose <b>Grant admin consent</b>.</li>
+                <li>Open the group whose members may use SIEMLite and copy its <b>Object ID</b>. To make some people Admins, do the same for a second group. Everyone else in the access group is a Standard user.</li>
+              </ol>
+              <p class="hint">SIEMLite checks the group at every sign-in and every five minutes, and switches off anyone who has left it. Keep a local admin account in case Microsoft is unreachable.</p>
+            </details>
+            <div class="mail-grid">
+              <label class="field-label wide-2">Directory (tenant) ID
+                <input class="input" id="entra-tenant" placeholder="11111111-2222-3333-4444-555555555555" autocomplete="off" spellcheck="false" autocapitalize="off">
+              </label>
+              <label class="field-label wide-2">Application (client) ID
+                <input class="input" id="entra-client" placeholder="11111111-2222-3333-4444-555555555555" autocomplete="off" spellcheck="false" autocapitalize="off">
+              </label>
+              <label class="field-label wide-2">Client secret
+                <input class="input" id="entra-secret" type="password" autocomplete="new-password">
+              </label>
+              <label class="field-label wide-2">SIEMLite address
+                <input class="input" id="entra-url" placeholder="https://siem.example.com:8443" autocomplete="off" spellcheck="false" autocapitalize="off">
+              </label>
+              <div class="field-label wide">Redirect URL <span class="muted">(paste this into the app registration)</span>
+                <div class="copy-row"><input class="input mono" id="entra-redirect" readonly aria-label="Redirect URL"><button class="btn" type="button" id="entra-copy">Copy</button></div>
+              </div>
+              <label class="field-label wide-2">Access group Object ID <span class="muted">(who may sign in)</span>
+                <input class="input" id="entra-group" placeholder="11111111-2222-3333-4444-555555555555" autocomplete="off" spellcheck="false" autocapitalize="off">
+              </label>
+              <label class="field-label wide-2">Admin group Object ID <span class="muted">(optional: these people are Admins)</span>
+                <input class="input" id="entra-admin" placeholder="Leave empty to make everyone a Standard user" autocomplete="off" spellcheck="false" autocapitalize="off">
+              </label>
+            </div>
+            <div class="mail-actions">
+              <button class="btn btn-primary" type="submit" id="entra-save">Save</button>
+              <button class="btn" type="button" id="entra-test">Test connection</button>
+              <button class="btn" type="button" id="entra-sync" hidden>Check the group now</button>
+              <button class="link-btn" type="button" id="entra-remove" hidden>Remove Entra settings</button>
+            </div>
+            <p class="notice" id="entra-msg" role="status" hidden></p>
+          </form>
+        </div>
+      </section>
     </section>
 
     <!-- System -->
@@ -1105,7 +1174,31 @@ function setTheme(choice) {
 for (const b of document.querySelectorAll("[data-theme-choice]")) b.onclick = () => setTheme(b.dataset.themeChoice);
 
 // --- Sign-in and API ---
+const SSO_ERRORS = {
+  not_in_group: "Your Microsoft account isn't in the group that can use SIEMLite. Ask an admin to add you.",
+  name_taken: "A SIEMLite account with your name already exists, so it can't be linked to your Microsoft account. Ask an admin.",
+  expired: "That sign-in took too long, or was started in another browser. Try again.",
+  denied: "Sign-in with Microsoft was cancelled or refused.",
+  too_many: "Too many failed sign-in attempts. Try again later.",
+  off: "Sign-in with Microsoft isn't available.",
+  failed: "Sign-in with Microsoft didn't work. Try again, or ask an admin to check the log.",
+};
+// A failed sign-in with Microsoft comes back as /?sso_error=<code>; show it once and tidy the address.
+function ssoErrorFromURL() {
+  const code = new URLSearchParams(location.search).get("sso_error");
+  if (code === null) return "";
+  try { history.replaceState(null, "", location.pathname + location.hash); } catch {}
+  return SSO_ERRORS[code] || SSO_ERRORS.failed;
+}
+async function loadProviders() {
+  try {
+    const res = await fetch("/api/v1/auth/providers", { credentials: "same-origin" });
+    const p = res.ok ? await res.json() : {};
+    $("sso-row").hidden = !p.entra;
+  } catch { $("sso-row").hidden = true; }
+}
 function showLogin(msg) {
+  loadProviders();
   $("login").hidden = false;
   $("login-err").hidden = !msg;
   $("login-err").textContent = msg || "";
@@ -1629,13 +1722,15 @@ async function openUsers() {
     usersCache = users;
     const name = (id) => (sourcesCache.find((s) => s.id === id) || {}).name || `Source ${id}`;
     $("users-body").replaceChildren(...users.map((u) => el("tr", {},
-      el("td", {}, el("b", { textContent: u.username }), u.username === me.username ? el("span", { className: "muted", textContent: " (you)" }) : ""),
+      el("td", {}, el("b", { textContent: u.username }), u.username === me.username ? el("span", { className: "muted", textContent: " (you)" }) : "",
+        u.auth_provider === "entra" ? el("span", { className: "pill", style: "margin-left:8px", textContent: "Microsoft", title: "Signs in with a Microsoft account, so it has no password here" }) : "",
+        u.disabled ? el("span", { className: "pill", style: "margin-left:6px", textContent: "Switched off", title: "No longer in the Entra access group, so it can't sign in" }) : ""),
       el("td", { textContent: u.role === "admin" ? "Admin" : "Standard" }),
       el("td", { className: u.limited ? "" : "muted", textContent: u.role === "admin" || !u.limited ? "Every source" : (u.sources.map(name).join(", ") || "No sources") }),
       el("td", { className: "muted", textContent: shortDate(u.created_at) }),
       el("td", { className: "actions" }, el("div", { className: "row-actions" },
         el("button", { className: "btn btn-small", textContent: "Edit", onclick: () => userDialog(u) }),
-        el("button", { className: "btn btn-small", textContent: "Change password", onclick: () => passwordDialog(u) }),
+        u.auth_provider && u.auth_provider !== "local" ? "" : el("button", { className: "btn btn-small", textContent: "Change password", onclick: () => passwordDialog(u) }),
         u.username === me.username ? "" : el("button", { className: "btn btn-small btn-danger", textContent: "Delete", onclick: () => deleteUser(u) }))))));
   } catch (err) { notice($("users-msg"), err.message); }
 }
@@ -2514,10 +2609,7 @@ async function refreshIntegrationCards() {
 async function openIntegrations() {
   notice($("integrations-msg"), "");
   await refreshIntegrationCards();
-  await loadMail();
-  // Open the settings straight away when nothing is set up yet.
-  const body = $("int-email-body"), btn = document.querySelector("#int-email .integ-toggle");
-  if (body.hidden && btn.textContent === "Set up") toggleIntegration(btn, true);
+  await Promise.all([loadMail(), loadEntra()]);
 }
 function toggleIntegration(btn, open) {
   const body = $(btn.getAttribute("aria-controls"));
@@ -2536,6 +2628,85 @@ for (const sw of document.querySelectorAll(".integ-switch input")) {
     await refreshIntegrationCards();
   };
 }
+
+// --- Microsoft Entra ID ---
+const entraRedirect = () => $("entra-url").value.trim().replace(/\/+$/, "") + "/api/v1/auth/entra/callback";
+function updateEntraRedirect() { $("entra-redirect").value = $("entra-url").value.trim() ? entraRedirect() : ""; }
+function entraFill(v) {
+  $("entra-tenant").value = v.tenant_id || "";
+  $("entra-client").value = v.client_id || "";
+  $("entra-url").value = v.public_url || location.origin;
+  $("entra-group").value = v.access_group_id || "";
+  $("entra-admin").value = v.admin_group_id || "";
+  $("entra-secret").value = "";
+  $("entra-secret").placeholder = v.secret_unreadable ? "Enter it again" : v.has_secret ? "Saved. Leave blank to keep it" : "";
+  $("entra-remove").hidden = !v.configured;
+  $("entra-sync").hidden = !v.enabled;
+  updateEntraRedirect();
+  const st = $("entra-status");
+  if (!v.configured) { st.textContent = "Not set up. People can only sign in with a password until you connect an Entra app."; return; }
+  st.textContent = v.secret_unreadable ? "The saved client secret can't be read on this server (it may have come from a backup), so enter it again and save."
+    : v.enabled ? "People in the access group can sign in with Microsoft from the sign-in page." : "Set up, but turned off, so the sign-in page doesn't offer Microsoft.";
+  if (v.last_sync) st.textContent += v.last_sync.ok
+    ? ` Last check ${new Date(v.last_sync.at).toLocaleTimeString()}: ${v.last_sync.members} in the group, ${v.last_sync.accounts} accounts.`
+    : ` The last check (${new Date(v.last_sync.at).toLocaleTimeString()}) failed: ${v.last_sync.error}`;
+}
+async function loadEntra() {
+  try { entraFill(await apiJSON("/api/v1/integrations/entra")); }
+  catch (err) { $("entra-status").textContent = err.message; }
+}
+function entraBody() {
+  const b = { tenant_id: $("entra-tenant").value.trim(), client_id: $("entra-client").value.trim(), public_url: $("entra-url").value.trim(),
+    access_group_id: $("entra-group").value.trim(), admin_group_id: $("entra-admin").value.trim() };
+  if ($("entra-secret").value) b.client_secret = $("entra-secret").value;
+  return b;
+}
+function entraBusy(on) { for (const id of ["entra-save", "entra-test", "entra-sync", "entra-remove"]) $(id).disabled = on; }
+$("entra-url").oninput = updateEntraRedirect;
+$("entra-copy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("entra-redirect").value); notice($("entra-msg"), "Copied the Redirect URL.", true); }
+  catch { $("entra-redirect").select(); notice($("entra-msg"), "Press Ctrl+C to copy the selected Redirect URL."); }
+};
+$("entra-form").onsubmit = async (e) => {
+  e.preventDefault();
+  entraBusy(true);
+  try {
+    const v = await apiJSON("/api/v1/integrations/entra", { method: "PUT", json: entraBody() });
+    entraFill(v);
+    notice($("entra-msg"), "Saved. Choose Test connection to check the app and the groups.", true);
+    refreshIntegrationCards();
+  } catch (err) { notice($("entra-msg"), err.message); }
+  entraBusy(false);
+};
+$("entra-test").onclick = async () => {
+  entraBusy(true);
+  notice($("entra-msg"), "Connecting to Microsoft…", true);
+  try {
+    const r = await apiJSON("/api/v1/integrations/entra/test", { method: "POST", json: entraBody() });
+    const people = (n) => `${n} ${n === 1 ? "person" : "people"}`;
+    notice($("entra-msg"), `Connected. The access group "${r.access_group}" has ${people(r.access_group_members)}.` +
+      (r.admin_group ? ` The admin group "${r.admin_group}" has ${people(r.admin_group_members)}.` : "") +
+      " These settings are not saved until you choose Save.", true);
+  } catch (err) { notice($("entra-msg"), err.message); }
+  entraBusy(false);
+};
+$("entra-sync").onclick = async () => {
+  entraBusy(true);
+  notice($("entra-msg"), "Checking the group…", true);
+  try {
+    const r = await apiJSON("/api/v1/integrations/entra/sync", { method: "POST" });
+    notice($("entra-msg"), `Checked: ${r.members} in the group, ${r.accounts} accounts here. ${r.disabled} switched off, ${r.enabled} switched on, ${r.changed} roles changed.`, true);
+    await loadEntra();
+  } catch (err) { notice($("entra-msg"), err.message); }
+  entraBusy(false);
+};
+$("entra-remove").onclick = async () => {
+  if (!(await confirmAction("Remove the Entra settings?", "People can no longer sign in with Microsoft. Accounts that were created that way stay, but they have no password, so only an admin can change what they can do. Local accounts are not affected.", "Remove"))) return;
+  entraBusy(true);
+  try { entraFill(await apiJSON("/api/v1/integrations/entra", { method: "PUT", json: { tenant_id: "" } })); notice($("entra-msg"), "Removed.", true); refreshIntegrationCards(); }
+  catch (err) { notice($("entra-msg"), err.message); }
+  entraBusy(false);
+};
 
 // --- Email settings ---
 const MAIL_PORTS = { starttls: 587, tls: 465, none: 25 };
@@ -2708,7 +2879,7 @@ function start() {
 setTheme(document.documentElement.dataset.theme || "system");
 (async () => {
   const res = await fetch("/api/v1/me", { credentials: "same-origin" });
-  if (res.ok) { applySession(await res.json()); start(); } else showLogin();
+  if (res.ok) { applySession(await res.json()); start(); } else showLogin(ssoErrorFromURL());
 })();
 </script>
 </body>

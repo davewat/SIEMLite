@@ -145,6 +145,10 @@ func TestUpgradeToV7(t *testing.T) {
 	for _, stmt := range []string{
 		fmt.Sprintf(`INSERT INTO user_sources (user_id, source_id) VALUES (%d, %d)`, b, syslog.ID),
 		`ALTER TABLE users DROP COLUMN limited`,
+		`DROP INDEX idx_users_external`,
+		`ALTER TABLE users DROP COLUMN auth_provider`,
+		`ALTER TABLE users DROP COLUMN external_id`,
+		`ALTER TABLE users DROP COLUMN disabled`,
 		`PRAGMA user_version = 6`,
 	} {
 		if _, err := db.Write.Exec(stmt); err != nil {
@@ -188,6 +192,10 @@ func TestUpgradeToV9KeepsUserSources(t *testing.T) {
 	for _, stmt := range []string{
 		`DROP TABLE alerts`, `DROP TABLE alert_rules`,
 		`DELETE FROM sources WHERE kind = 'internal'`,
+		`DROP INDEX idx_users_external`,
+		`ALTER TABLE users DROP COLUMN auth_provider`,
+		`ALTER TABLE users DROP COLUMN external_id`,
+		`ALTER TABLE users DROP COLUMN disabled`,
 		`PRAGMA user_version = 8`,
 	} {
 		if _, err := db.Write.Exec(stmt); err != nil {

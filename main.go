@@ -32,6 +32,7 @@ import (
 	"siemlite/pkg/backup"
 	"siemlite/pkg/email"
 	"siemlite/pkg/enrich"
+	"siemlite/pkg/entra"
 	"siemlite/pkg/ingest"
 	"siemlite/pkg/integrations"
 	"siemlite/pkg/intel"
@@ -39,6 +40,7 @@ import (
 	"siemlite/pkg/parser"
 	"siemlite/pkg/retention"
 	"siemlite/pkg/search"
+	"siemlite/pkg/secret"
 	"siemlite/pkg/sources"
 	"siemlite/pkg/storage"
 	"siemlite/pkg/syslogd"
@@ -329,6 +331,12 @@ func run() error {
 	}
 
 	emailSvc := email.NewService(repo, email.KeyPath(*dbPath))
+	entraSvc := entra.NewService(repo, repo, secret.NewBox(secret.KeyPath(*dbPath)), slog.Default())
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		entraSvc.Run(bgCtx) // while sign-in with Microsoft is on, keeps accounts in step with the group
+	}()
 	var updates *update.Checker
 	if *updateCheck {
 		updates = update.New(version(), startExe)
@@ -337,7 +345,7 @@ func run() error {
 	srv := api.NewServer(*addr, api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: engine,
 		Auth: authn, Intel: intelSvc, Syslog: syslogSrv, Router: router, AI: aiClient,
-		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc), Audit: auditLog, Alerts: alertEngine,
+		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Audit: auditLog, Alerts: alertEngine,
 		Restart: func() {
 			select {
 			case restartCh <- struct{}{}:

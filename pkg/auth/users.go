@@ -136,6 +136,14 @@ func (a *Authenticator) Login(ctx context.Context, remote, username, password st
 	case err != nil:
 		return "", nil, err
 	}
+	// Accounts that sign in through a service, and disabled accounts, never
+	// sign in with a password. This looks the same as a wrong password.
+	if u.AuthProvider != storage.ProviderLocal || u.Disabled {
+		spendHashTime(password)
+		a.limiter.fail(remote)
+		a.log.Warn("login failed", "remote", remote, "user", username)
+		return "", nil, ErrBadCredentials
+	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
 		a.limiter.fail(remote)
 		a.log.Warn("login failed", "remote", remote, "user", username)
@@ -143,19 +151,32 @@ func (a *Authenticator) Login(ctx context.Context, remote, username, password st
 	}
 	a.limiter.reset(remote)
 
-	token, err = randomToken("")
-	if err != nil {
+	if token, err = a.StartSession(ctx, u); err != nil {
 		return "", nil, err
+	}
+	a.log.Info("login", "user", u.Username, "remote", remote)
+	return token, u, nil
+}
+
+// StartSession begins a session for a user who has already been verified, by
+// password in Login or by single sign-on, and returns the cookie's token. It
+// refuses a disabled account.
+func (a *Authenticator) StartSession(ctx context.Context, u *storage.User) (string, error) {
+	if u.Disabled {
+		return "", ErrBadCredentials
+	}
+	token, err := randomToken("")
+	if err != nil {
+		return "", err
 	}
 	now := time.Now()
 	if err := a.repo.PurgeExpiredSessions(ctx, now.UnixMilli()); err != nil {
 		a.log.Warn("purge sessions failed", "err", err)
 	}
 	if err := a.repo.CreateSession(ctx, hashToken(token), u.ID, now.UnixMilli(), now.Add(SessionTTL).UnixMilli()); err != nil {
-		return "", nil, err
+		return "", err
 	}
-	a.log.Info("login", "user", u.Username, "remote", remote)
-	return token, u, nil
+	return token, nil
 }
 
 // Logout ends the session for the request's cookie, if any.

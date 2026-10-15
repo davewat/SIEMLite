@@ -2,19 +2,14 @@ package email
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
 	"siemlite/pkg/integrations"
+	"siemlite/pkg/secret"
 )
 
 const settingKey = "smtp"
@@ -26,20 +21,18 @@ type Store interface {
 }
 
 // KeyPath is the encryption key's file, beside the database.
-func KeyPath(dbPath string) string {
-	return strings.TrimSuffix(dbPath, filepath.Ext(dbPath)) + "-secret.key"
-}
+func KeyPath(dbPath string) string { return secret.KeyPath(dbPath) }
 
 // Service reads and saves the SMTP settings and sends mail with them.
 type Service struct {
-	store   Store
-	keyPath string
-	mu      sync.Mutex // one save at a time
+	store Store
+	box   *secret.Box
+	mu    sync.Mutex // one save at a time
 }
 
 // NewService returns a Service keeping its password key at keyPath.
 func NewService(store Store, keyPath string) *Service {
-	return &Service{store: store, keyPath: keyPath}
+	return &Service{store: store, box: secret.NewBox(keyPath)}
 }
 
 // stored is what is saved: the settings, and the password sealed.
@@ -83,7 +76,7 @@ func (s *Service) Get(ctx context.Context) (View, error) {
 	v := View{Config: st.Config, Configured: st.Host != "", HasPassword: st.Password != ""}
 	v.Enabled = v.Configured && !st.Disabled
 	if st.Password != "" {
-		if _, err := s.open(st.Password); err != nil {
+		if _, err := s.box.Open(st.Password); err != nil {
 			v.PasswordUnreadable = true
 		}
 	}
@@ -124,7 +117,7 @@ func (s *Service) Save(ctx context.Context, cfg Config, password *string) error 
 	if password != nil {
 		st.Password = ""
 		if *password != "" {
-			if st.Password, err = s.seal(*password); err != nil {
+			if st.Password, err = s.box.Seal(*password); err != nil {
 				return err
 			}
 		}
@@ -221,7 +214,7 @@ func (s *Service) SendWith(ctx context.Context, cfg Config, password *string, m 
 	if password != nil {
 		st.Password = ""
 		if *password != "" {
-			if st.Password, err = s.seal(*password); err != nil {
+			if st.Password, err = s.box.Seal(*password); err != nil {
 				return err
 			}
 		}
@@ -233,86 +226,9 @@ func (s *Service) send(ctx context.Context, st stored, m Message) error {
 	pass := ""
 	if st.Password != "" {
 		var err error
-		if pass, err = s.open(st.Password); err != nil {
+		if pass, err = s.box.Open(st.Password); err != nil {
 			return errors.New("The saved password can't be read by this server (the settings may have come from a backup). Enter the password again and save.")
 		}
 	}
 	return Send(ctx, st.Config, pass, m)
-}
-
-// --- Password encryption ---
-
-// key returns the key, making the file on first use.
-func (s *Service) key(create bool) ([]byte, error) {
-	b, err := os.ReadFile(s.keyPath)
-	if err == nil && len(b) == 32 {
-		return b, nil
-	}
-	if err == nil {
-		return nil, errors.New("the password key file is damaged")
-	}
-	if !errors.Is(err, os.ErrNotExist) || !create {
-		return nil, err
-	}
-	b = make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(s.keyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) { // made a moment ago by another save
-			return s.key(false)
-		}
-		return nil, err
-	}
-	defer f.Close()
-	if _, err := f.Write(b); err != nil {
-		return nil, err
-	}
-	return b, nil
-}
-
-func (s *Service) gcm(create bool) (cipher.AEAD, error) {
-	k, err := s.key(create)
-	if err != nil {
-		return nil, err
-	}
-	blk, err := aes.NewCipher(k)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(blk)
-}
-
-const sealedPrefix = "v1:"
-
-func (s *Service) seal(plain string) (string, error) {
-	g, err := s.gcm(true)
-	if err != nil {
-		return "", fmt.Errorf("can't protect the password: %w", err)
-	}
-	nonce := make([]byte, g.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return "", err
-	}
-	return sealedPrefix + base64.StdEncoding.EncodeToString(g.Seal(nonce, nonce, []byte(plain), nil)), nil
-}
-
-func (s *Service) open(sealed string) (string, error) {
-	if !strings.HasPrefix(sealed, sealedPrefix) {
-		return "", errors.New("unknown format")
-	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(sealed, sealedPrefix))
-	if err != nil {
-		return "", err
-	}
-	g, err := s.gcm(false)
-	if err != nil {
-		return "", err
-	}
-	if len(raw) < g.NonceSize() {
-		return "", errors.New("too short")
-	}
-	plain, err := g.Open(nil, raw[:g.NonceSize()], raw[g.NonceSize():], nil)
-	return string(plain), err
 }

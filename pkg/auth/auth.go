@@ -159,6 +159,13 @@ func New(repo *storage.Repository, log *slog.Logger) *Authenticator {
 	return &Authenticator{repo: repo, log: log, limiter: newLoginLimiter(), lastTouch: map[int64]time.Time{}}
 }
 
+// AttemptsAllowed reports whether a client address may try to sign in (it is
+// locked out after repeated failures). Single sign-on shares this with passwords.
+func (a *Authenticator) AttemptsAllowed(remote string) bool { return a.limiter.allow(remote) }
+
+// RecordFailure counts a failed sign-in against a client address.
+func (a *Authenticator) RecordFailure(remote string) { a.limiter.fail(remote) }
+
 // TouchSource records that a source sent logs, at most once a minute per
 // source so busy senders don't turn every request into a write.
 func (a *Authenticator) TouchSource(ctx context.Context, id int64) {

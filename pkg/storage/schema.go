@@ -8,7 +8,7 @@ import (
 )
 
 // schemaVersion is stored in PRAGMA user_version.
-const schemaVersion = 12
+const schemaVersion = 13
 
 // schemaStatements is the idempotent DDL applied on startup.
 //
@@ -267,6 +267,16 @@ var upgrades = map[int][]string{
 	// parser and no detection (parser_none). It goes with a NULL parser_id.
 	11: {
 		`ALTER TABLE sources ADD COLUMN parser_none INTEGER NOT NULL DEFAULT 0`,
+	},
+	// v13: where an account signs in. 'local' accounts use a password; others
+	// (such as 'entra') come from an integration and are identified by
+	// external_id, which is stable even when the person's name changes. A
+	// disabled account can't sign in and has no sessions.
+	12: {
+		`ALTER TABLE users ADD COLUMN auth_provider TEXT NOT NULL DEFAULT 'local'`,
+		`ALTER TABLE users ADD COLUMN external_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_external ON users(auth_provider, external_id) WHERE external_id != ''`,
 	},
 }
 
