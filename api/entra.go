@@ -240,6 +240,17 @@ func (s *Server) handleEntraCallback(w http.ResponseWriter, r *http.Request) {
 		s.ssoRedirect(w, r, entra.CodeFailed)
 		return
 	}
+	// Turning sign-in with Microsoft off ends every Microsoft session. A sign-in
+	// that was already under way could finish just after that, so check again now
+	// that the session exists: if it was turned off in between, this session is
+	// either ended by that, or ended here.
+	if !s.deps.Entra.Active(r.Context()) {
+		if err := s.deps.Auth.EndSession(r.Context(), token); err != nil {
+			s.deps.Logger.Error("couldn't end a session started as sign-in with Microsoft was turned off", "err", err)
+		}
+		s.ssoRedirect(w, r, "off")
+		return
+	}
 	auth.SetSessionCookie(w, token)
 	s.audit(r, audit.Entry{Action: "signin.sso", Actor: user.Username, Class: audit.Authentication, Message: user.Username + " signed in with Microsoft"})
 	s.ssoRedirect(w, r, "")

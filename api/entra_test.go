@@ -416,3 +416,35 @@ func TestTurningOffEntraCannotLockEveryoneOut(t *testing.T) {
 		t.Errorf("the refused change signed her out = %d", got)
 	}
 }
+
+// A sign-in that is under way when Microsoft sign-in is turned off must not
+// leave a session behind: turning it off ends every Microsoft session, and
+// this one doesn't exist yet when that happens.
+func TestTurningOffDuringASignInLeavesNoSession(t *testing.T) {
+	e := newEnv(t)
+	e.user("root", auth.RoleAdmin)
+	root := e.client()
+	e.login(root, "root", password)
+	e.ms.Set(entratest.AccessGroup, annOID, true)
+	if got := e.call(root, "PUT", "/api/v1/integrations/entra", entraForm(e), nil, nil); got != 200 {
+		t.Fatalf("save = %d", got)
+	}
+	br := e.browser()
+	authURL, state := e.startSSO(br)
+	e.ms.Expect(authURL, annOID, "ann@example.com")
+	// The admin turns it off while the sign-in is being completed.
+	e.ms.BeforeCodeExchange = func() {
+		if got := e.call(root, "POST", "/api/v1/integrations/entra/enabled", map[string]any{"enabled": false}, nil, nil); got != 200 {
+			t.Errorf("turning off mid-sign-in = %d", got)
+		}
+	}
+	resp := e.get(br, "/api/v1/auth/entra/callback?code="+entratest.Code+"&state="+state)
+	e.ms.BeforeCodeExchange = nil
+	if resp.Header.Get("Location") != "/?sso_error=off" || setCookie(resp, auth.CookieName) != nil {
+		t.Errorf("callback = %q session cookie = %v", resp.Header.Get("Location"), setCookie(resp, auth.CookieName))
+	}
+	var n int
+	if err := e.repo.DB().Read.QueryRow(`SELECT COUNT(*) FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.auth_provider = 'entra'`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("%d Microsoft sessions exist after it was turned off (%v)", n, err)
+	}
+}
