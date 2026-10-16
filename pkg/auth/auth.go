@@ -142,9 +142,10 @@ func CreateKey(ctx context.Context, repo *storage.Repository, name string, parse
 
 // Authenticator validates API keys and sessions against the database.
 type Authenticator struct {
-	repo    *storage.Repository
-	log     *slog.Logger
-	limiter *loginLimiter
+	repo     *storage.Repository
+	log      *slog.Logger
+	limiter  *loginLimiter // failed sign-ins per client address
+	accounts *loginLimiter // failed sign-ins per account, from anywhere
 
 	// lastTouch throttles "last used" writes to one per source per minute.
 	touchMu   sync.Mutex
@@ -156,7 +157,8 @@ func New(repo *storage.Repository, log *slog.Logger) *Authenticator {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Authenticator{repo: repo, log: log, limiter: newLoginLimiter(), lastTouch: map[int64]time.Time{}}
+	return &Authenticator{repo: repo, log: log, limiter: newLoginLimiter(maxFailures), accounts: newLoginLimiter(maxAccountFailures),
+		lastTouch: map[int64]time.Time{}}
 }
 
 // AttemptsAllowed reports whether a client address may try to sign in (it is
@@ -242,14 +244,28 @@ func (a *Authenticator) Require(perm Permission, next http.Handler) http.Handler
 		// Cookies are sent by browsers automatically, so for state-changing
 		// requests confirm they come from this site (SameSite=Strict already
 		// blocks cross-site cookies; this is defense in depth).
-		if p.Kind == KindUser && r.Method != http.MethodGet && r.Method != http.MethodHead {
-			if o := r.Header.Get("Origin"); o != "" && o != "https://"+r.Host {
-				deny(w, http.StatusForbidden, "cross-origin request refused")
-				return
-			}
+		if p.Kind == KindUser && r.Method != http.MethodGet && r.Method != http.MethodHead && CrossSite(r) {
+			deny(w, http.StatusForbidden, "cross-origin request refused")
+			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))
 	})
+}
+
+// CrossSite reports whether a browser sent r from another site. Browsers
+// send Origin on every cross-origin request that can change state, and
+// Sec-Fetch-Site on every request, so a request is refused when either says
+// it came from elsewhere. A request with neither (a command-line tool, or an
+// old browser) is allowed: it carries no cookie the site set with SameSite.
+func CrossSite(r *http.Request) bool {
+	if o := r.Header.Get("Origin"); o != "" && o != "https://"+r.Host {
+		return true
+	}
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+		return false
+	}
+	return true
 }
 
 func deny(w http.ResponseWriter, status int, msg string) {

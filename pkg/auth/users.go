@@ -94,17 +94,24 @@ func SetPassword(ctx context.Context, repo *storage.Repository, username, passwo
 	return nil
 }
 
-// GeneratePassword returns a random password for bootstrap accounts.
+// GeneratePassword returns a random password for bootstrap accounts. Each
+// character is drawn uniformly (a byte modulo the alphabet's size would favor
+// its first characters).
 func GeneratePassword() (string, error) {
 	const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-	b := make([]byte, 20)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
+	out := make([]byte, 0, 20)
+	for len(out) < cap(out) {
+		var b [1]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return "", err
+		}
+		// 256 isn't a multiple of 57; bytes past the largest one are redrawn.
+		if int(b[0]) >= 256-256%len(alphabet) {
+			continue
+		}
+		out = append(out, alphabet[int(b[0])%len(alphabet)])
 	}
-	for i := range b {
-		b[i] = alphabet[int(b[i])%len(alphabet)]
-	}
-	return string(b), nil
+	return string(out), nil
 }
 
 // dummyHash lets Login spend the same time on unknown usernames as on known
@@ -122,16 +129,23 @@ func spendHashTime(password string) {
 // Login checks credentials and starts a session. remote is the caller's
 // address, used only to rate-limit failed attempts. The returned token goes in
 // the session cookie.
+//
+// Failed attempts are counted per address and, more loosely, per account, so
+// an attacker spreading guesses over many addresses is still slowed. What was
+// typed as the username is logged only when it names an account: people
+// sometimes type their password into the username field.
 func (a *Authenticator) Login(ctx context.Context, remote, username, password string) (token string, user *storage.User, err error) {
-	if !a.limiter.allow(remote) {
+	username = strings.TrimSpace(username)
+	account := strings.ToLower(username)
+	if !a.limiter.allow(remote) || !a.accounts.allow(account) {
 		return "", nil, ErrTooManyAttempts
 	}
-	u, hash, err := a.repo.GetUserForLogin(ctx, strings.TrimSpace(username))
+	u, hash, err := a.repo.GetUserForLogin(ctx, username)
 	switch {
 	case errors.Is(err, storage.ErrUserNotFound):
 		spendHashTime(password)
 		a.limiter.fail(remote)
-		a.log.Warn("login failed", "remote", remote, "user", username)
+		a.log.Warn("login failed", "remote", remote, "user", "(unknown username)")
 		return "", nil, ErrBadCredentials
 	case err != nil:
 		return "", nil, err
@@ -141,15 +155,18 @@ func (a *Authenticator) Login(ctx context.Context, remote, username, password st
 	if u.AuthProvider != storage.ProviderLocal || u.Disabled {
 		spendHashTime(password)
 		a.limiter.fail(remote)
-		a.log.Warn("login failed", "remote", remote, "user", username)
+		a.accounts.fail(account)
+		a.log.Warn("login failed", "remote", remote, "user", u.Username)
 		return "", nil, ErrBadCredentials
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
 		a.limiter.fail(remote)
-		a.log.Warn("login failed", "remote", remote, "user", username)
+		a.accounts.fail(account)
+		a.log.Warn("login failed", "remote", remote, "user", u.Username)
 		return "", nil, ErrBadCredentials
 	}
 	a.limiter.reset(remote)
+	a.accounts.reset(account)
 
 	if token, err = a.StartSession(ctx, u); err != nil {
 		return "", nil, err
@@ -214,8 +231,13 @@ func ClearSessionCookie(w http.ResponseWriter) {
 // ErrTooManyAttempts is returned while a client is locked out.
 var ErrTooManyAttempts = errors.New("too many failed sign-in attempts; try again later")
 
-// loginLimiter blocks a client address after repeated failed sign-ins.
+// loginLimiter blocks a key (a client address, or an account name) after
+// repeated failed sign-ins. It remembers at most maxEntries keys: past that,
+// expired entries are dropped and then, if still full, one at random, so a
+// flood of failures from ever-changing addresses can't grow it without bound.
 type loginLimiter struct {
+	max int // failures allowed in a window
+
 	mu      sync.Mutex
 	entries map[string]*attempts
 }
@@ -226,11 +248,18 @@ type attempts struct {
 }
 
 const (
-	maxFailures   = 10
-	failureWindow = 15 * time.Minute
+	// maxFailures is per address. An account is locked only after many more,
+	// from any number of addresses, so one person can't shut a colleague out
+	// with a few wrong guesses, while spraying across addresses is still slowed.
+	maxFailures        = 10
+	maxAccountFailures = 50
+	failureWindow      = 15 * time.Minute
+	maxEntries         = 100_000
 )
 
-func newLoginLimiter() *loginLimiter { return &loginLimiter{entries: map[string]*attempts{}} }
+func newLoginLimiter(max int) *loginLimiter {
+	return &loginLimiter{max: max, entries: map[string]*attempts{}}
+}
 
 func (l *loginLimiter) allow(key string) bool {
 	l.mu.Lock()
@@ -243,18 +272,45 @@ func (l *loginLimiter) allow(key string) bool {
 		delete(l.entries, key)
 		return true
 	}
-	return e.count < maxFailures
+	return e.count < l.max
 }
 
 func (l *loginLimiter) fail(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	now := time.Now()
 	e, ok := l.entries[key]
-	if !ok || time.Since(e.first) > failureWindow {
-		l.entries[key] = &attempts{count: 1, first: time.Now()}
+	if ok && now.Sub(e.first) <= failureWindow {
+		e.count++
 		return
 	}
-	e.count++
+	if !ok && len(l.entries) >= maxEntries {
+		l.makeRoom(now)
+	}
+	l.entries[key] = &attempts{count: 1, first: now}
+}
+
+// makeRoom frees at least one entry: every expired one, else any one.
+func (l *loginLimiter) makeRoom(now time.Time) {
+	for k, e := range l.entries {
+		if now.Sub(e.first) > failureWindow {
+			delete(l.entries, k)
+		}
+	}
+	if len(l.entries) < maxEntries {
+		return
+	}
+	for k := range l.entries {
+		delete(l.entries, k)
+		return
+	}
+}
+
+// size is how many keys are remembered (for tests).
+func (l *loginLimiter) size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.entries)
 }
 
 func (l *loginLimiter) reset(key string) {

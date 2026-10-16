@@ -194,7 +194,7 @@ func (s *Server) Handler() http.Handler {
 	// /health is public but only reveals up/down; detail needs a signed-in user.
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.Handle("GET /", web.Handler())
-	return s.recoverer(s.publicHostGuard(mux))
+	return s.recoverer(securityHeaders(s.publicHostGuard(mux)))
 }
 
 // Start serves HTTPS (there is no plaintext listener) until Shutdown; it
@@ -522,7 +522,7 @@ func (s *Server) session(username, role string, limited bool, sources []int64) s
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Same-site check: a login CSRF would sign the victim in as the attacker.
-	if o := r.Header.Get("Origin"); o != "" && o != "https://"+r.Host {
+	if auth.CrossSite(r) {
 		writeError(w, http.StatusForbidden, "cross-origin request refused")
 		return
 	}
@@ -566,7 +566,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if o := r.Header.Get("Origin"); o != "" && o != "https://"+r.Host {
+	if auth.CrossSite(r) {
 		writeError(w, http.StatusForbidden, "cross-origin request refused")
 		return
 	}

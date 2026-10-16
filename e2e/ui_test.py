@@ -423,7 +423,9 @@ def main(binary, loggen):
             page.wait_for_selector("#alerts-body tr")
             before = page.locator("#alerts-body tr").count()
             page.locator("#alerts-body tr").first.get_by_role("button", name="Acknowledge").click()
-            page.wait_for_function(f"document.querySelectorAll('#alerts-body tr').length < {before}")
+            # (Not wait_for_function: its predicate is eval'd in the page, which
+            # the Content-Security-Policy forbids. Wait for the last row to go.)
+            page.locator("#alerts-body tr").nth(before - 1).wait_for(state="detached")
             check(True, "acknowledging moves an alert off the Open tab")
 
             # Every page fits a phone screen.
