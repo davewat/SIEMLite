@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"siemlite/pkg/audit"
 	"siemlite/pkg/auth"
 	"siemlite/pkg/backup"
+	"siemlite/pkg/certs"
 	"siemlite/pkg/email"
 	"siemlite/pkg/enrich"
 	"siemlite/pkg/entra"
@@ -93,8 +95,11 @@ var errRestart = errors.New("restart requested")
 func run() error {
 	dbPath := flag.String("db", "siemlite.db", "SQLite database path")
 	addr := flag.String("addr", "localhost:8443", "HTTPS listen address")
-	httpAddr := flag.String("http-addr", "", "plain-HTTP listen address for a reverse proxy that does the HTTPS, such as Caddy, e.g. 0.0.0.0:8080 (off when empty; never publish it)")
-	domain := flag.String("domain", "", "public domain Caddy serves SIEMLite on (compose.public.yaml), until one is set on the System page")
+	httpAddr := flag.String("http-addr", "", "plain-HTTP listen address for your own reverse proxy that does the HTTPS, e.g. 0.0.0.0:8080 (off when empty; never publish it)")
+	tlsMode := flag.String("tls-mode", "self-signed", "HTTPS certificate: self-signed (or the -tls-cert files), or letsencrypt for -domain; the System page overrides it")
+	domain := flag.String("domain", "", "domain to get a Let's Encrypt certificate for with -tls-mode=letsencrypt; port 443 must reach SIEMLite")
+	acmeDirectory := flag.String("acme-directory", "", "ACME server for -tls-mode=letsencrypt (default Let's Encrypt; e.g. its staging server for testing)")
+	acmeCARoot := flag.String("acme-ca-root", "", "extra CA certificate (PEM file) to trust when talking to the ACME server, for a private ACME CA")
 	trustedProxies := flag.String("trusted-proxies", "", "reverse proxies whose X-Forwarded-For is believed: comma-separated addresses, networks or host names, e.g. caddy")
 	certFile := flag.String("tls-cert", "", "TLS certificate PEM (default: <db dir>/siemlite.crt, self-signed if missing)")
 	keyFile := flag.String("tls-key", "", "TLS private key PEM (default: <db dir>/siemlite.key)")
@@ -302,6 +307,31 @@ func run() error {
 	if generated {
 		slog.Info("generated self-signed TLS certificate", "cert", *certFile, "key", *keyFile)
 	}
+	acmeOpts := certs.Options{DirectoryURL: *acmeDirectory}
+	if *acmeCARoot != "" {
+		pemData, err := os.ReadFile(*acmeCARoot)
+		if err != nil {
+			return fmt.Errorf("-acme-ca-root: %w", err)
+		}
+		pool, _ := x509.SystemCertPool()
+		if pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pemData) {
+			return fmt.Errorf("-acme-ca-root: no certificate in %s", *acmeCARoot)
+		}
+		acmeOpts.HTTPClient = &http.Client{Timeout: time.Minute, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}
+	}
+	certMgr, err := certs.New(ctx, repo, *certFile, *keyFile, filepath.Join(filepath.Dir(*dbPath), "acme"),
+		certs.Settings{Mode: *tlsMode, Domain: *domain}, acmeOpts, slog.Default())
+	if err != nil {
+		return err
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		certMgr.Run(bgCtx) // picks up certificate files renewed outside SIEMLite
+	}()
 
 	var syslogSrv *syslogd.Server
 	if *syslogUDP != "" || *syslogTCP != "" || *syslogTLS != "" {
@@ -320,11 +350,7 @@ func run() error {
 			},
 		}
 		if *syslogTLS != "" {
-			pair, err := tls.LoadX509KeyPair(*certFile, *keyFile)
-			if err != nil {
-				return fmt.Errorf("syslog TLS certificate: %w", err)
-			}
-			cfg.TLSConfig = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
+			cfg.TLSConfig = certMgr.TLSConfig() // the same certificate as HTTPS, Let's Encrypt's included
 		}
 		if syslogSrv, err = syslogd.Start(cfg); err != nil {
 			return fmt.Errorf("start syslog listener: %w", err)
@@ -352,7 +378,7 @@ func run() error {
 	srv := api.NewServer(*addr, api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: engine,
 		Auth: authn, Intel: intelSvc, Syslog: syslogSrv, Router: router, AI: aiClient,
-		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Proxies: proxies, BehindProxy: *httpAddr != "" && proxies.Configured(), Domain: *domain, Audit: auditLog, Alerts: alertEngine,
+		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Proxies: proxies, Certs: certMgr, Audit: auditLog, Alerts: alertEngine,
 		Restart: func() {
 			select {
 			case restartCh <- struct{}{}:
@@ -367,7 +393,7 @@ func run() error {
 		proxies.Run(bgCtx)
 	}()
 	serveErr := make(chan error, 2)
-	go func() { serveErr <- srv.Start(*certFile, *keyFile) }()
+	go func() { serveErr <- srv.Start(certMgr.TLSConfig()) }()
 	if *httpAddr != "" {
 		go func() { serveErr <- srv.StartPlain(*httpAddr) }()
 		if proxies.Configured() {
