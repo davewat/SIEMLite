@@ -21,6 +21,7 @@ import (
 	"siemlite/pkg/audit"
 	"siemlite/pkg/auth"
 	"siemlite/pkg/backup"
+	"siemlite/pkg/certs"
 	"siemlite/pkg/email"
 	"siemlite/pkg/entra"
 	"siemlite/pkg/ingest"
@@ -65,11 +66,8 @@ type Deps struct {
 	Entra *entra.Service
 	// Proxies are the reverse proxies whose X-Forwarded-For is believed (optional).
 	Proxies *Proxies
-	// BehindProxy is set when SIEMLite runs behind Caddy (compose.public.yaml).
-	BehindProxy bool
-	// Domain is the public domain from SIEMLITE_DOMAIN, used when none is set
-	// on the System page.
-	Domain  string
+	// Certs chooses the HTTPS certificate (System page; optional).
+	Certs   *certs.Manager
 	Updates *update.Checker // optional: the System page's update card
 	Version string          // e.g. "v0.7"
 	Audit   *audit.Logger   // optional: records actions as INTERNAL events
@@ -83,9 +81,8 @@ type Server struct {
 	http  *http.Server
 	plain *http.Server // plain HTTP, for a reverse proxy in front (optional)
 
-	domainMu     sync.Mutex // the public domain saved on the System page (public.go)
-	domain       string
-	domainLoaded bool
+	checkMu sync.Mutex
+	checks  map[string]time.Time // reachability checks under way (tlsapi.go)
 
 	// Failed and blocked sign-ins are recorded before anyone has signed in,
 	// so strangers mustn't be able to fill the database with them. Each
@@ -158,8 +155,9 @@ func (s *Server) Handler() http.Handler {
 	admin("PUT /api/v1/rules/{id}", s.handleSaveRule)
 	admin("DELETE /api/v1/rules/{id}", s.handleDeleteRule)
 	admin("GET /api/v1/system", s.handleSystem)
-	admin("GET /api/v1/system/public", s.handleGetPublic)
-	admin("PUT /api/v1/system/public", s.handleSavePublic)
+	admin("GET /api/v1/system/tls", s.handleGetTLS)
+	admin("PUT /api/v1/system/tls", s.handleSaveTLS)
+	admin("POST /api/v1/system/tls/check", s.handleCheckTLS)
 	admin("GET /api/v1/system/update", s.handleUpdateStatus)
 	admin("POST /api/v1/system/update", s.handleApplyUpdate)
 	admin("GET /api/v1/integrations", s.handleListIntegrations)
@@ -186,22 +184,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/logout", s.handleLogout)
 	// Sign in with Microsoft: public, since they happen before anyone is signed in.
 	mux.HandleFunc("GET /api/v1/auth/providers", s.handleProviders)
-	// Caddy asks this before getting a certificate (only Caddy may; see public.go).
-	mux.HandleFunc("GET /api/v1/caddy/ask", s.handleCaddyAsk)
+	// The System page's reachability check fetches this through the domain (tlsapi.go).
+	mux.HandleFunc("GET /.well-known/siemlite-check/{nonce}", s.handleCheckEcho)
 	mux.HandleFunc("GET /api/v1/auth/entra/start", s.handleEntraStart)
 	mux.HandleFunc("GET /api/v1/auth/entra/callback", s.handleEntraCallback)
 	mux.HandleFunc("GET /api/v1/me", s.handleMe)
 	// /health is public but only reveals up/down; detail needs a signed-in user.
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.Handle("GET /", web.Handler())
-	return s.recoverer(securityHeaders(s.publicHostGuard(mux)))
+	return s.recoverer(securityHeaders(mux))
 }
 
 // Start serves HTTPS (there is no plaintext listener) until Shutdown; it
 // returns nil on a clean shutdown.
-func (s *Server) Start(certFile, keyFile string) error {
-	s.http.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	if err := s.http.ListenAndServeTLS(certFile, keyFile); !errors.Is(err, http.ErrServerClosed) {
+func (s *Server) Start(cfg *tls.Config) error {
+	s.http.TLSConfig = cfg
+	if err := s.http.ListenAndServeTLS("", ""); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

@@ -12,7 +12,8 @@ a built-in web UI and a small JSON API.
 - **A quiet web UI**: one search field to start, light and dark themes (or follow the system), and fonts bundled
   in the binary, so the UI never contacts a font service.
 - **Full-text search**: SQLite FTS5 over the message, program, host, user, addresses and parsed fields, combined with time, severity, category, IP, user, source, country, ASN and threat filters.
-- **HTTPS only**: a self-signed certificate is generated on first start, or bring your own. To put it on the internet, Caddy can serve it with a Let's Encrypt certificate (see [Run on the internet](#run-on-the-internet)).
+- **HTTPS only**: a self-signed certificate is generated on first start, or SIEMLite gets one from Let's Encrypt for your domain and
+  renews it (see [Run on the internet](#run-on-the-internet)), or bring your own.
 - **Sources and parsers**: each application gets an access token that can only send logs, with a "last used" time and
   a parser of your choice. Build parsers in the UI from sample lines, upload them, or let a local AI model suggest one.
 - **Alerts**: rules that watch for patterns, like 10 failed SSH passwords from one address in 5 minutes, with four
@@ -52,7 +53,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.14` in `.env` and run `docker compose pull && docker compose up -d`.
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.15` in `.env` and run `docker compose pull && docker compose up -d`.
 Or build from the checkout, and deploy and upgrade with one command:
 
 ```sh
@@ -86,44 +87,39 @@ missed it, set a new one: `docker compose exec siemlite siemlite users passwd -u
 
 ### Run on the internet
 
-To serve SIEMLite on a public domain, let [Caddy](https://caddyserver.com) be its web server. Caddy gets a certificate from
-Let's Encrypt, renews it by itself, and redirects plain HTTP to HTTPS. SIEMLite's web ports then aren't published at all:
-only Caddy can reach SIEMLite, over a private port on the Docker network. Before you start:
+SIEMLite can get a certificate from [Let's Encrypt](https://letsencrypt.org) for your domain and renew it by itself, so browsers
+and apps trust it with no warning and nothing else to install. Before you start:
 
-- A DNS name (an A or AAAA record) that points at this server, such as `siem.example.com`.
-- Ports 80 and 443 reachable from the internet. Let's Encrypt connects to one of them to check you control the name.
+- A DNS name (an A or AAAA record) that points at this server's public address, such as `siem.example.com`.
+- Port **443** reachable from the internet and forwarded to SIEMLite: Let's Encrypt connects to it to check you control the name.
+  With Docker, publish it with `SIEMLITE_HTTPS_PORT=443` in `.env` (and leave `SIEMLITE_BIND` empty, or set it to the public address),
+  then `docker compose up -d`. Without Docker, use `-addr :443` (as root, or after `sudo setcap cap_net_bind_service=+ep ./siemlite`).
 
-Then add to `.env` and run `docker compose up -d`:
+Then on the **System** page, under **HTTPS certificate**, choose **Let's Encrypt**, enter the domain, choose **Check this address** (it
+confirms that the name and port 443 really lead to this SIEMLite), and **Save**. The status shows the certificate being obtained,
+usually within seconds, then who issued it and until when. Or set it from the start in `.env` with `SIEMLITE_TLS_MODE=letsencrypt` and
+`SIEMLITE_DOMAIN=siem.example.com`; what you save on the System page takes precedence.
 
-```sh
-COMPOSE_FILE=compose.yaml:compose.public.yaml
-SIEMLITE_DOMAIN=siem.example.com
-```
-
-Open `https://siem.example.com`. Caddy gets the certificate on that first visit (usually within seconds); `docker compose logs caddy`
-shows it.
-
-**Changing the domain** is done on the **System** page, under **Web address**; no restart or file edit is needed. Caddy asks SIEMLite
-before it gets a certificate for any name, and SIEMLite agrees only to the domain set there (or, until one is, `SIEMLITE_DOMAIN`), so
-nobody can make Caddy request certificates for names that aren't yours. When you move to a new domain, visitors who use the old one are
-redirected to it. `SIEMLITE_DOMAIN` is still needed in `.env`: it is where SIEMLite starts, since it can't be reached any other way.
-
-- **Visitors' addresses** reach SIEMLite in `X-Forwarded-For`, which it believes only from Caddy (`-trusted-proxies=caddy`),
-  so sign-in lockouts apply to the person who failed, not to everyone, and the audit log shows who it was. Caddy throws away any
-  `X-Forwarded-For` a visitor sends, so it can't be forged, and SIEMLite's plain port refuses anyone but Caddy. Caddy runs on a
-  Docker network (`edge`) that only SIEMLite shares, so no other container can ever take an address SIEMLite trusts as Caddy's;
-  don't add other services to it.
-- **Syslog** is still published on its own ports, and senders outside loopback and private networks are refused unless you list
-  them in `SIEMLITE_SYSLOG_ALLOW`. Don't open syslog to the internet: it has no authentication. Syslog over TLS keeps SIEMLite's own
-  certificate.
+- **Nothing is lost if it fails.** Only visitors who ask for that domain get its certificate. Anyone using another address (an IP or a
+  LAN name), and the domain itself until its certificate arrives, still gets the self-signed one, so you can always get back in and
+  switch back. The status says what went wrong (DNS, port 443, Let's Encrypt's rate limit).
+- **Renewal is automatic**, well before the certificate expires. The certificate and the Let's Encrypt account are kept in an `acme`
+  folder next to the database (`/data/acme` with Docker, so in the volume); keep it, or a rebuild asks Let's Encrypt again and can
+  hit its rate limits.
+- **Syslog over TLS** uses the same certificate for senders that ask for the domain.
 - **Apps sending logs** use `https://siem.example.com/api/v1/logs`. The certificate is trusted everywhere, so the snippets on the
   Connect screen work without `siemlite.crt`; remove those lines.
 - **Microsoft sign-in**: set the SIEMLite address on the Entra card to `https://siem.example.com`.
-- Caddy keeps the certificate in the `caddy-data` volume; keep it, or Caddy asks Let's Encrypt again on every rebuild. It adds
-  `Strict-Transport-Security` and compresses responses. To change anything else, edit `caddy/Caddyfile`.
-- Inside the Docker network SIEMLite still serves HTTPS on 8443 (the health check and the log generator use it); it is not
-  published.
-- Not for a private network with no public name: Let's Encrypt can't reach it. Keep the default setup there.
+- Only port 443 is needed; there is no plain-HTTP port to redirect from. **Syslog** keeps its own ports, and senders outside loopback
+  and private networks are refused unless you list them in `SIEMLITE_SYSLOG_ALLOW`. Don't open syslog to the internet: it has no
+  authentication.
+- To test without using up Let's Encrypt's limits, point `-acme-directory` at its staging server
+  (`https://acme-staging-v02.api.letsencrypt.org/directory`; its certificates aren't trusted by browsers). `-acme-directory` also
+  works with other ACME CAs, and `-acme-ca-root` adds a private CA for talking to one.
+- **Behind your own reverse proxy** (nginx, Traefik, a load balancer) that does the HTTPS instead: give SIEMLite a private plain-HTTP
+  port with `-http-addr` and name the proxy in `-trusted-proxies`, so visitors' real addresses reach the sign-in lockout and the audit
+  log. SIEMLite believes `X-Forwarded-For` only from those proxies, reading it from the right so a visitor can't forge it, and the
+  plain port refuses everyone else.
 
 ### The pages
 
@@ -140,7 +136,7 @@ redirected to it. `SIEMLITE_DOMAIN` is still needed in `.env`: it is where SIEML
 - **Sources** (admins): add sources (each gets an access token and ready-to-paste code), see when each source last sent logs, choose how each source's lines are read (Automatic, None or a parser), add logs by hand, and enable, disable or delete a token (Manage).
 - **Parsers** (admins): build, upload, export and edit parsers.
 - **Integrations** (admins): connect SIEMLite to other services. Each integration is a card you set up and then turn on or off: email, and sign-in with Microsoft Entra ID.
-- **System** (admins): the version and whether a newer release is out (with an update button), the web address Caddy serves it on, database size and uptime, and backups: create, schedule, download, upload, restore and delete.
+- **System** (admins): the version and whether a newer release is out (with an update button), the HTTPS certificate (self-signed or Let's Encrypt), database size and uptime, and backups: create, schedule, download, upload, restore and delete.
 
 ### Send logs from an app
 
@@ -236,8 +232,8 @@ the raw text.
 | `PATCH /api/v1/alerts/{id}` | same | Acknowledge, close or reopen: `{"status": "acknowledged"}`. |
 | `GET /api/v1/rules`, `POST /api/v1/rules`, `PUT`/`DELETE /api/v1/rules/{id}` | any signed-in user (list), admin | Alert rules: `{"name", "description", "enabled", "severity", "query", "min_severity", "threat_only", "source_id", "group_by", "threshold", "window_minutes"}`. |
 | `GET /api/v1/system` | admin | Database size and version, uptime, backups folder and free space. |
-| `GET`/`PUT /api/v1/system/public` | admin | The public domain Caddy serves SIEMLite on: `{"domain"}` (empty removes it). Reports where the domain comes from, whether Caddy is in front, and what the name resolves to. |
-| `GET /api/v1/caddy/ask?domain=` | Caddy only | Caddy asks this before getting a certificate: `200` for the public domain, `404` for anything else. Refused for anyone but a trusted proxy asking directly. |
+| `GET`/`PUT /api/v1/system/tls`, `POST /api/v1/system/tls/check` | admin | The HTTPS certificate: `{"mode": "self-signed"/"letsencrypt", "domain"}`; the reply describes the certificates, whether one is being obtained, the last error and what the domain resolves to. The check (`{"domain"}`) says whether that name on port 443 reaches this SIEMLite. |
+| `GET /.well-known/siemlite-check/{token}` | public | Answers the check above with its one-time token. |
 | `GET /api/v1/integrations` | admin | The built-in integrations and their state: `{"integrations": [{"id", "name", "description", "state": "needs_setup"/"off"/"on"/"error", "summary", "configured", "enabled"}]}`. |
 | `POST /api/v1/integrations/{id}/enabled` | admin | Turn an integration on or off, keeping its settings: `{"enabled": true}`. Refused until it is set up. |
 | `GET`/`PUT /api/v1/integrations/email`, `POST /api/v1/integrations/email/test` | admin | The email settings (`{"host", "port", "security": "starttls"/"tls"/"none", "username", "password", "from_address", "from_name", "skip_verify"}`; the password is write-only, and leaving it out keeps the saved one) and a test send (the same fields plus `"to"`). These were `/api/v1/system/email` in v0.10, which still works. |
@@ -639,9 +635,12 @@ by spaces.
 | Flag | Default | Meaning |
 |---|---|---|
 | `-addr` | `localhost:8443` | HTTPS listen address |
-| `-http-addr` | | Plain-HTTP listen address for a reverse proxy that does the HTTPS, such as Caddy (off when empty). Never publish it |
-| `-domain` | | The public domain Caddy serves SIEMLite on, until one is set on the System page (`SIEMLITE_DOMAIN`) |
-| `-trusted-proxies` | | Reverse proxies whose `X-Forwarded-For` is believed: addresses, networks or host names, e.g. `caddy`. With it set, the `-http-addr` port refuses everyone else |
+| `-tls-mode` | `self-signed` | `self-signed` (or the `-tls-cert` files), or `letsencrypt` for `-domain`; the System page takes precedence |
+| `-domain` | | The domain to get a Let's Encrypt certificate for; port 443 must reach SIEMLite |
+| `-acme-directory` | Let's Encrypt | Another ACME server, such as Let's Encrypt's staging server for testing |
+| `-acme-ca-root` | | A CA certificate (PEM file) to trust when talking to the ACME server, for a private ACME CA |
+| `-http-addr` | | Plain-HTTP listen address for your own reverse proxy that does the HTTPS (off when empty). Never publish it |
+| `-trusted-proxies` | | Reverse proxies whose `X-Forwarded-For` is believed: addresses, networks or host names, e.g. `proxy`. With it set, the `-http-addr` port refuses everyone else |
 | `-db` | `siemlite.db` | SQLite database path; events go in a folder beside it named after it (`siemlite-events`) |
 | `-retention-days` | `30` | Delete events older than this many days (checked daily; whole days are deleted as files) |
 | `-tls-cert`, `-tls-key` | `<db dir>/siemlite.crt`, `.key` | Certificate and key; a self-signed pair is generated if both are missing |

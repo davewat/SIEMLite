@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"siemlite/pkg/alerts"
 	"siemlite/pkg/audit"
 	"siemlite/pkg/auth"
+	"siemlite/pkg/certs"
 	"siemlite/pkg/email"
 	"siemlite/pkg/entra"
 	"siemlite/pkg/entra/entratest"
@@ -64,9 +66,21 @@ func newEnvWith(t *testing.T, change func(*api.Deps)) *env {
 	entraSvc.Authority, entraSvc.Graph = ms.URL, ms.URL+"/v1.0"
 	emailSvc := email.NewService(repo, filepath.Join(t.TempDir(), "k.key"))
 	engine := alerts.New(repo, nil)
+	certDir := t.TempDir()
+	certFile, keyFile := filepath.Join(certDir, "t.crt"), filepath.Join(certDir, "t.key")
+	if _, _, err := api.EnsureCertificate(certFile, keyFile, []string{"localhost"}); err != nil {
+		t.Fatal(err)
+	}
+	deadACME, _ := net.Listen("tcp", "127.0.0.1:0") // an ACME server that never answers
+	acmeURL := "http://" + deadACME.Addr().String() + "/directory"
+	deadACME.Close()
+	certMgr, err := certs.New(ctx, repo, certFile, keyFile, filepath.Join(certDir, "acme"), certs.Settings{}, certs.Options{DirectoryURL: acmeURL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	deps := api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: search.NewEngine(repo), Auth: auth.New(repo, nil), Router: router,
-		Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Version: "v0.0-test", Audit: audit.New(worker, router, nil), Alerts: engine,
+		Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Certs: certMgr, Version: "v0.0-test", Audit: audit.New(worker, router, nil), Alerts: engine,
 	}
 	if change != nil {
 		change(&deps)

@@ -346,8 +346,8 @@
   .mail-test .input { width: 240px; }
   .sched-fields { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
   .sched-fields .input { width: 90px; }
-  .sched-fields #public-domain { width: 260px; }
-  #public-form .notice { grid-column: 1 / -1; margin: 0; }
+  .sched-fields #tls-domain { width: 240px; }
+  #tls-form .notice { grid-column: 1 / -1; margin: 0; }
   .working td { color: var(--ink-2); }
   .backups td { white-space: nowrap; }
   .backups tr.working td, .backups tr.empty td { white-space: normal; }
@@ -386,8 +386,8 @@
     .sys-figures { grid-template-columns: 1fr; }
     .three { grid-template-columns: 1fr; }
     .sched { grid-template-columns: 1fr; }
-    .sched-fields #public-domain { width: 100%; }
-    #public-form .field-label { flex: 1 1 100%; }
+    .sched-fields #tls-domain { width: 100%; }
+    #tls-form .field-label { flex: 1 1 100%; }
     .mail-grid .wide-2 { grid-column: 1 / -1; }
     .integ-head { grid-template-columns: 1fr; }
     .integ-controls { grid-column: 1; grid-row: auto; justify-content: space-between; margin-top: 6px; }
@@ -902,18 +902,22 @@
           <button class="btn btn-primary" type="button" id="update-apply" hidden>Update and restart</button>
         </div>
       </div>
-      <form class="panel sched" id="public-form" autocomplete="off">
-        <div><h2>Web address</h2>
-          <p class="hint">The domain Caddy serves SIEMLite on, with a certificate from Let's Encrypt.</p>
-          <p class="hint" id="public-status">Checking…</p></div>
+      <form class="panel sched" id="tls-form" autocomplete="off">
+        <div><h2>HTTPS certificate</h2>
+          <p class="hint">How SIEMLite proves who it is to browsers and to syslog over TLS.</p>
+          <p class="hint" id="tls-status">Checking…</p></div>
         <div class="sched-fields">
-          <label class="field-label">Domain
-            <input class="input" id="public-domain" placeholder="siem.example.com" spellcheck="false" autocapitalize="off">
+          <div class="seg" role="group" aria-label="Certificate">
+            <button type="button" data-tls="self-signed" aria-pressed="true">Self-signed</button>
+            <button type="button" data-tls="letsencrypt" aria-pressed="false">Let's Encrypt</button>
+          </div>
+          <label class="field-label" id="tls-domain-wrap" hidden>Domain
+            <input class="input" id="tls-domain" placeholder="siem.example.com" spellcheck="false" autocapitalize="off">
           </label>
-          <button class="btn btn-primary" type="submit" id="public-save">Save</button>
-          <button class="link-btn" type="button" id="public-clear" hidden>Remove</button>
+          <button class="btn" type="button" id="tls-check" hidden>Check this address</button>
+          <button class="btn btn-primary" type="submit" id="tls-save">Save</button>
         </div>
-        <p class="notice" id="public-msg" role="status" hidden></p>
+        <p class="notice" id="tls-msg" role="status" hidden></p>
       </form>
       <form class="panel sched" id="sched-form">
         <div><h2>Automatic backups</h2><p class="hint">Older automatic backups are removed as new ones are made. Backups you make,
@@ -1290,7 +1294,7 @@ function route() {
   ({ dashboard: openDashboard, database: () => openDatabase(params), users: openUsers, sources: openSources,
      parsers: openParsers, parser: () => openParserEditor(arg), integrations: openIntegrations, system: openSystem, alerts: () => openAlerts(params) })[view]();
   document.title = `${({ dashboard: "Dashboard", database: "Database", users: "Users", sources: "Sources", parsers: "Parsers", parser: "Parser", integrations: "Integrations", system: "System", alerts: "Alerts" })[view]} · SIEMLite`;
-  if (view !== "system") clearTimeout(backupPoll);
+  if (view !== "system") { clearTimeout(backupPoll); clearTimeout(tlsPoll); }
 }
 window.addEventListener("hashchange", () => { if (me) route(); });
 function setMenu(open) {
@@ -2572,8 +2576,8 @@ async function openSystem() {
     }
   } catch (err) { notice($("system-msg"), err.message); }
   loadUpdate(false);
-  loadPublic();
-  notice($("public-msg"), "");
+  loadTLS();
+  notice($("tls-msg"), "");
   await loadBackups(true);
 }
 async function loadUpdate(refresh) {
@@ -2798,53 +2802,69 @@ $("mail-remove").onclick = async () => {
   catch (err) { notice($("mail-msg"), err.message); }
   mailBusy(false);
 };
-// --- Web address (Caddy) ---
-let publicNow = null;
-function publicFill(v) {
-  publicNow = v;
-  $("public-domain").value = v.domain || "";
-  $("public-clear").hidden = !v.domain;
-  const st = $("public-status");
-  if (!v.behind_caddy) {
-    st.textContent = "Caddy isn't in front of SIEMLite on this server, so this has no effect yet. To serve SIEMLite on the internet, add COMPOSE_FILE=compose.yaml:compose.public.yaml to .env and run docker compose up -d (see \"Run on the internet\" in the README).";
+// --- HTTPS certificate ---
+let tlsNow = null, tlsMode = "self-signed", tlsPoll;
+const tlsDate = (ms) => new Date(ms).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+function tlsPick(mode) {
+  tlsMode = mode;
+  for (const b of document.querySelectorAll("[data-tls]")) b.setAttribute("aria-pressed", String(b.dataset.tls === mode));
+  $("tls-domain-wrap").hidden = $("tls-check").hidden = mode !== "letsencrypt";
+}
+function tlsFill(v) {
+  tlsNow = v;
+  tlsPick(v.mode);
+  if (v.domain || !$("tls-domain").value) $("tls-domain").value = v.domain || "";
+  const st = $("tls-status"), self = v.self_signed_certificate || {};
+  clearTimeout(tlsPoll);
+  if (v.mode !== "letsencrypt") {
+    st.textContent = (self.self_signed ? "Using SIEMLite's self-signed certificate" : `Using the certificate files set with -tls-cert (issued by ${self.issuer})`) +
+      (self.not_after ? `, valid until ${tlsDate(self.not_after)}.` : ".") +
+      (self.self_signed ? " Browsers warn about it unless they trust siemlite.crt. That's fine for testing and private networks; for the internet, use Let's Encrypt." : "");
     return;
   }
-  if (!v.domain) { st.textContent = "Caddy is running. Enter the domain people will use; Caddy gets its certificate on the first visit."; return; }
-  st.textContent = `Caddy serves SIEMLite at https://${v.domain}.` +
-    (v.resolves_to ? ` The name points to ${v.resolves_to.join(", ")}.` : v.resolve_error ? " " + v.resolve_error : "") +
-    (v.from === "setting" ? " This comes from SIEMLITE_DOMAIN in .env; saving here replaces it." : "");
+  const le = v.letsencrypt_certificate;
+  let text = `Let's Encrypt for ${v.domain}. `;
+  if (le) text += `Certificate issued by ${le.issuer}, valid until ${tlsDate(le.not_after)}; it renews by itself. `;
+  else if (v.obtaining) text += "Getting the certificate now… ";
+  else if (v.last_error) text += v.last_error + " ";
+  if (v.resolves_to) text += `The name points to ${v.resolves_to.join(", ")}. `;
+  else if (v.resolve_error) text += v.resolve_error + " ";
+  text += "Anyone using another address (an IP or a LAN name) still gets the self-signed certificate, so it stays reachable.";
+  st.textContent = text;
+  if (v.obtaining || (!le && !v.last_error)) tlsPoll = setTimeout(loadTLS, 2000); // follow it until it's done
 }
-async function loadPublic() {
-  try { publicFill(await apiJSON("/api/v1/system/public")); }
-  catch (err) { $("public-status").textContent = err.message; }
+async function loadTLS() {
+  try { tlsFill(await apiJSON("/api/v1/system/tls")); }
+  catch (err) { $("tls-status").textContent = err.message; }
 }
-async function savePublic(domain) {
-  domain = domain.toLowerCase().replace(/\.$/, "");
-  // A rough check before asking anything; the server has the final say.
-  if (domain && !/^([a-z0-9-]+\.)+[a-z0-9-]+$/.test(domain)) {
-    notice($("public-msg"), "Enter a domain name only, such as siem.example.com: no https://, port or path.");
-    return;
+for (const b of document.querySelectorAll("[data-tls]")) b.onclick = () => { tlsPick(b.dataset.tls); if (tlsMode === "letsencrypt") $("tls-domain").focus(); };
+$("tls-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const domain = $("tls-domain").value.trim().toLowerCase().replace(/\.$/, "");
+  if (tlsMode === "letsencrypt" && !/^([a-z0-9-]+\.)+[a-z0-9-]+$/.test(domain)) {
+    notice($("tls-msg"), "Enter the domain name only, such as siem.example.com: no https://, port or path."); return;
   }
-  const moving = publicNow && publicNow.behind_caddy && domain && domain !== location.hostname.toLowerCase();
-  if (moving && !(await confirmAction(`Move SIEMLite to https://${domain}?`,
-    "Caddy gets a certificate for it on the first visit. You'll be taken there and need to sign in again; the old address will send people to the new one.", "Move"))) return;
-  if (!domain && publicNow && publicNow.behind_caddy && !(await confirmAction("Remove the web address?",
-    "Caddy won't get a certificate for any name until you set one, so a new or renewed certificate can't be issued.", "Remove"))) return;
-  $("public-save").disabled = $("public-clear").disabled = true;
+  $("tls-save").disabled = true;
   try {
-    const v = await apiJSON("/api/v1/system/public", { method: "PUT", json: { domain } });
-    publicFill(v);
-    if (moving && v.domain) {
-      notice($("public-msg"), `Saved. Opening https://${v.domain}…`, true);
-      setTimeout(() => { location.href = `https://${v.domain}/#/system`; }, 1200);
-    } else {
-      notice($("public-msg"), v.domain ? (v.behind_caddy ? `Saved. Caddy gets the certificate on the first visit to https://${v.domain}, which can take a few seconds.` : "Saved. It takes effect once Caddy is in front of SIEMLite.") : "Removed.", true);
-    }
-  } catch (err) { notice($("public-msg"), err.message); }
-  $("public-save").disabled = $("public-clear").disabled = false;
-}
-$("public-form").onsubmit = (e) => { e.preventDefault(); savePublic($("public-domain").value.trim()); };
-$("public-clear").onclick = () => savePublic("");
+    const v = await apiJSON("/api/v1/system/tls", { method: "PUT", json: { mode: tlsMode, domain } });
+    tlsFill(v);
+    notice($("tls-msg"), v.mode === "letsencrypt"
+      ? `Saved. SIEMLite is getting a certificate for ${v.domain}; the status above follows it. Once it's ready, open https://${v.domain}.`
+      : "Saved. SIEMLite now uses its self-signed certificate for every address.", true);
+  } catch (err) { notice($("tls-msg"), err.message); }
+  $("tls-save").disabled = false;
+};
+$("tls-check").onclick = async () => {
+  const domain = $("tls-domain").value.trim();
+  if (!domain) { notice($("tls-msg"), "Enter the domain to check."); return; }
+  $("tls-check").disabled = true;
+  notice($("tls-msg"), `Checking https://${domain}…`, true);
+  try {
+    const r = await apiJSON("/api/v1/system/tls/check", { method: "POST", json: { domain } });
+    notice($("tls-msg"), r.detail, r.reachable);
+  } catch (err) { notice($("tls-msg"), err.message); }
+  $("tls-check").disabled = false;
+};
 
 async function loadBackups(fillSettings) {
   clearTimeout(backupPoll);
